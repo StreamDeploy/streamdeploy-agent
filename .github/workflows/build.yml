@@ -54,9 +54,9 @@ jobs:
     - name: Install cross-compilation tools (ARM64)
       if: matrix.cross_compile
       run: |
-        # Install cross-compilation toolchain only (no multiarch setup)
+        # Install cross-compilation toolchain and download tools
         for i in {1..3}; do
-          if sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu pkg-config; then
+          if sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu pkg-config wget curl; then
             break
           elif [ $i -eq 3 ]; then
             echo "Failed to install cross-compilation tools after 3 attempts"
@@ -76,34 +76,131 @@ jobs:
         echo "Using ARM64 sysroot: $ARM64_SYSROOT"
         echo "CROSS_SYSROOT=$ARM64_SYSROOT" >> $GITHUB_ENV
         
-        # Download and install ARM64 libcurl packages directly
-        echo "Downloading ARM64 libcurl packages..."
-        TEMP_DIR=$(mktemp -d)
-        cd $TEMP_DIR
+        # Function to download with multiple fallbacks
+        download_package() {
+          local package_name="$1"
+          local urls=("$@")
+          urls=("${urls[@]:1}")  # Remove first element (package_name)
+          
+          for url in "${urls[@]}"; do
+            echo "Trying to download $package_name from: $url"
+            if wget -q --timeout=30 --tries=3 "$url"; then
+              echo "✅ Successfully downloaded $package_name"
+              return 0
+            else
+              echo "❌ Failed to download from $url"
+            fi
+          done
+          
+          echo "ERROR: Failed to download $package_name from all URLs"
+          return 1
+        }
         
-        # Download ARM64 libcurl packages from Ubuntu repository
-        wget -q http://ports.ubuntu.com/pool/main/c/curl/libcurl4_8.5.0-2ubuntu10.6_arm64.deb
-        wget -q http://ports.ubuntu.com/pool/main/c/curl/libcurl4-openssl-dev_8.5.0-2ubuntu10.6_arm64.deb
+        # Download and install ARM64 libcurl packages with multiple fallbacks
+        echo "Setting up temporary directory for downloads..."
+        TEMP_DIR=$(mktemp -d)
+        cd "$TEMP_DIR"
+        echo "Working in: $TEMP_DIR"
+        
+        # Define multiple URLs for each package (different versions and mirrors)
+        LIBCURL4_URLS=(
+          "http://ports.ubuntu.com/pool/main/c/curl/libcurl4_8.5.0-2ubuntu10.6_arm64.deb"
+          "http://ports.ubuntu.com/pool/main/c/curl/libcurl4_8.5.0-2ubuntu10.5_arm64.deb"
+          "http://ports.ubuntu.com/pool/main/c/curl/libcurl4_8.5.0-2ubuntu10.4_arm64.deb"
+          "http://archive.ubuntu.com/ubuntu/pool/main/c/curl/libcurl4_8.5.0-2ubuntu10.6_arm64.deb"
+        )
+        
+        LIBCURL_DEV_URLS=(
+          "http://ports.ubuntu.com/pool/main/c/curl/libcurl4-openssl-dev_8.5.0-2ubuntu10.6_arm64.deb"
+          "http://ports.ubuntu.com/pool/main/c/curl/libcurl4-openssl-dev_8.5.0-2ubuntu10.5_arm64.deb"
+          "http://ports.ubuntu.com/pool/main/c/curl/libcurl4-openssl-dev_8.5.0-2ubuntu10.4_arm64.deb"
+          "http://archive.ubuntu.com/ubuntu/pool/main/c/curl/libcurl4-openssl-dev_8.5.0-2ubuntu10.6_arm64.deb"
+        )
+        
+        # Download packages with fallbacks
+        echo "📦 Downloading ARM64 libcurl runtime package..."
+        if ! download_package "libcurl4" "${LIBCURL4_URLS[@]}"; then
+          echo "FATAL: Could not download libcurl4 ARM64 package"
+          exit 1
+        fi
+        
+        echo "📦 Downloading ARM64 libcurl development package..."
+        if ! download_package "libcurl4-openssl-dev" "${LIBCURL_DEV_URLS[@]}"; then
+          echo "FATAL: Could not download libcurl4-openssl-dev ARM64 package"
+          exit 1
+        fi
+        
+        # Verify downloads
+        echo "🔍 Verifying downloaded packages..."
+        ls -la *.deb
+        for deb in *.deb; do
+          if [ ! -f "$deb" ]; then
+            echo "ERROR: Package $deb not found"
+            exit 1
+          fi
+          echo "✅ Found: $deb ($(du -h "$deb" | cut -f1))"
+        done
         
         # Extract packages to sysroot
-        echo "Extracting ARM64 libcurl packages..."
-        dpkg-deb -x libcurl4_8.5.0-2ubuntu10.6_arm64.deb $ARM64_SYSROOT/
-        dpkg-deb -x libcurl4-openssl-dev_8.5.0-2ubuntu10.6_arm64.deb $ARM64_SYSROOT/
+        echo "📂 Extracting ARM64 libcurl packages to sysroot..."
+        for deb in *.deb; do
+          echo "Extracting: $deb"
+          if ! dpkg-deb -x "$deb" "$ARM64_SYSROOT/"; then
+            echo "ERROR: Failed to extract $deb"
+            exit 1
+          fi
+        done
         
         # Clean up
         cd /
-        rm -rf $TEMP_DIR
+        rm -rf "$TEMP_DIR"
+        echo "🧹 Cleaned up temporary directory"
         
-        # Verify ARM64 libraries exist
-        ls -la $ARM64_SYSROOT/lib/ || echo "ARM64 lib directory not found"
-        ls -la $ARM64_SYSROOT/include/ || echo "ARM64 include directory not found"
+        # Comprehensive verification
+        echo "🔍 Verifying ARM64 sysroot setup..."
         
-        # Find ARM64 libcurl
-        echo "Searching for libcurl in sysroot..."
-        find $ARM64_SYSROOT -name "libcurl*" -type f 2>/dev/null || echo "libcurl not found in sysroot"
+        # Check basic directories
+        for dir in "$ARM64_SYSROOT/lib" "$ARM64_SYSROOT/usr/lib" "$ARM64_SYSROOT/usr/include"; do
+          if [ -d "$dir" ]; then
+            echo "✅ Directory exists: $dir"
+          else
+            echo "⚠️  Directory missing: $dir"
+          fi
+        done
         
-        # List contents of usr/lib to see what we have
-        ls -la $ARM64_SYSROOT/usr/lib/aarch64-linux-gnu/ 2>/dev/null || echo "No usr/lib/aarch64-linux-gnu directory"
+        # Find all libcurl files
+        echo "🔍 Searching for libcurl files in sysroot..."
+        CURL_FILES=$(find "$ARM64_SYSROOT" -name "*curl*" -type f 2>/dev/null || true)
+        if [ -n "$CURL_FILES" ]; then
+          echo "✅ Found libcurl files:"
+          echo "$CURL_FILES" | while read -r file; do
+            echo "  📄 $file"
+            file "$file" 2>/dev/null || echo "    (file command failed)"
+          done
+        else
+          echo "❌ No libcurl files found in sysroot"
+          exit 1
+        fi
+        
+        # Check specific library locations
+        echo "🔍 Checking specific library locations..."
+        for lib_path in \
+          "$ARM64_SYSROOT/usr/lib/aarch64-linux-gnu/libcurl.so.4" \
+          "$ARM64_SYSROOT/usr/lib/aarch64-linux-gnu/libcurl.so" \
+          "$ARM64_SYSROOT/lib/aarch64-linux-gnu/libcurl.so.4" \
+          "$ARM64_SYSROOT/lib/aarch64-linux-gnu/libcurl.so"; do
+          if [ -f "$lib_path" ]; then
+            echo "✅ Found library: $lib_path"
+            file "$lib_path" | grep -q "aarch64" && echo "  ✅ Confirmed ARM64 architecture" || echo "  ⚠️  Architecture check failed"
+          fi
+        done
+        
+        # List contents for debugging
+        echo "📋 Contents of key directories:"
+        ls -la "$ARM64_SYSROOT/usr/lib/aarch64-linux-gnu/" 2>/dev/null | head -20 || echo "No usr/lib/aarch64-linux-gnu directory"
+        ls -la "$ARM64_SYSROOT/usr/include/curl/" 2>/dev/null || echo "No curl headers found"
+        
+        echo "🎉 ARM64 cross-compilation environment setup complete!"
 
     - name: Configure CMake
       run: |
