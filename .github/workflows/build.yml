@@ -61,11 +61,14 @@ jobs:
         sudo find /etc/apt/sources.list.d/ -name "*.list" -exec sudo sed -i '/security\.ubuntu\.com/d' {} \;
         sudo sed -i '/security\.ubuntu\.com/d' /etc/apt/sources.list
         
-        # Create a custom sources.list with only working repositories
+        # Create a custom sources.list with working repositories including ARM64 support
         sudo tee /etc/apt/sources.list > /dev/null <<EOF
         deb http://archive.ubuntu.com/ubuntu/ noble main restricted universe multiverse
         deb http://archive.ubuntu.com/ubuntu/ noble-updates main restricted universe multiverse
         deb http://archive.ubuntu.com/ubuntu/ noble-backports main restricted universe multiverse
+        deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ noble main restricted universe multiverse
+        deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ noble-updates main restricted universe multiverse
+        deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ noble-backports main restricted universe multiverse
         EOF
         
         # Add ARM64 architecture support
