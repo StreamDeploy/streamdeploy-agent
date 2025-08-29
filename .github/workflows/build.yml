@@ -51,18 +51,12 @@ jobs:
           fi
         done
 
-    - name: Setup cross-compilation environment (ARM64)
+    - name: Install cross-compilation tools (ARM64)
       if: matrix.cross_compile
       run: |
-        # Add ARM64 architecture for multiarch support
-        sudo dpkg --add-architecture arm64
-        sudo apt-get update
-        
-        # Install cross-compilation tools and ARM64 libraries
+        # Install cross-compilation toolchain only (no multiarch setup)
         for i in {1..3}; do
-          if sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-                                     libcurl4-openssl-dev:arm64 libssl-dev:arm64 \
-                                     pkg-config; then
+          if sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu pkg-config; then
             break
           elif [ $i -eq 3 ]; then
             echo "Failed to install cross-compilation tools after 3 attempts"
@@ -73,29 +67,36 @@ jobs:
           fi
         done
         
-        # Set up pkg-config for cross-compilation
-        echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
-        echo "PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
+        # Verify cross-compiler installation
+        aarch64-linux-gnu-gcc --version
+        aarch64-linux-gnu-g++ --version
+        
+        # Find cross-compiler sysroot
+        SYSROOT=$(aarch64-linux-gnu-gcc -print-sysroot)
+        echo "Cross-compiler sysroot: $SYSROOT"
+        echo "CROSS_SYSROOT=$SYSROOT" >> $GITHUB_ENV
 
     - name: Configure CMake
       run: |
         mkdir build
         cd build
         if [ "${{ matrix.cross_compile }}" = "true" ]; then
-          # Set up cross-compilation environment variables
-          export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
-          export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig
+          echo "Configuring for ARM64 cross-compilation..."
+          echo "Using sysroot: $CROSS_SYSROOT"
           
+          # Use cross-compiler's built-in sysroot and library paths
           cmake .. -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
                    -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
                    -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
                    -DCMAKE_SYSTEM_NAME=Linux \
                    -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
-                   -DCMAKE_FIND_ROOT_PATH=/usr/aarch64-linux-gnu \
+                   -DCMAKE_FIND_ROOT_PATH="$CROSS_SYSROOT" \
                    -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
                    -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
                    -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
-                   -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
+                   -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY \
+                   -DCURL_LIBRARY="$CROSS_SYSROOT/usr/lib/aarch64-linux-gnu/libcurl.so" \
+                   -DCURL_INCLUDE_DIR="$CROSS_SYSROOT/usr/include"
         else
           cmake .. -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
         fi
