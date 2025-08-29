@@ -76,12 +76,34 @@ jobs:
         echo "Using ARM64 sysroot: $ARM64_SYSROOT"
         echo "CROSS_SYSROOT=$ARM64_SYSROOT" >> $GITHUB_ENV
         
+        # Download and install ARM64 libcurl packages directly
+        echo "Downloading ARM64 libcurl packages..."
+        TEMP_DIR=$(mktemp -d)
+        cd $TEMP_DIR
+        
+        # Download ARM64 libcurl packages from Ubuntu repository
+        wget -q http://ports.ubuntu.com/pool/main/c/curl/libcurl4_8.5.0-2ubuntu10.6_arm64.deb
+        wget -q http://ports.ubuntu.com/pool/main/c/curl/libcurl4-openssl-dev_8.5.0-2ubuntu10.6_arm64.deb
+        
+        # Extract packages to sysroot
+        echo "Extracting ARM64 libcurl packages..."
+        dpkg-deb -x libcurl4_8.5.0-2ubuntu10.6_arm64.deb $ARM64_SYSROOT/
+        dpkg-deb -x libcurl4-openssl-dev_8.5.0-2ubuntu10.6_arm64.deb $ARM64_SYSROOT/
+        
+        # Clean up
+        cd /
+        rm -rf $TEMP_DIR
+        
         # Verify ARM64 libraries exist
         ls -la $ARM64_SYSROOT/lib/ || echo "ARM64 lib directory not found"
         ls -la $ARM64_SYSROOT/include/ || echo "ARM64 include directory not found"
         
         # Find ARM64 libcurl
+        echo "Searching for libcurl in sysroot..."
         find $ARM64_SYSROOT -name "libcurl*" -type f 2>/dev/null || echo "libcurl not found in sysroot"
+        
+        # List contents of usr/lib to see what we have
+        ls -la $ARM64_SYSROOT/usr/lib/aarch64-linux-gnu/ 2>/dev/null || echo "No usr/lib/aarch64-linux-gnu directory"
 
     - name: Configure CMake
       run: |
