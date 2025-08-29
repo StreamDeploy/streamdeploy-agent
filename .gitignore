@@ -1,0 +1,108 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+out/
+
+# Compiled binaries
+*.exe
+*.out
+*.app
+streamdeploy-agent
+streamdeploy-agent-*
+
+# Object files
+*.o
+*.obj
+*.lo
+*.slo
+*.ko
+
+# Static libraries
+*.a
+*.lib
+*.la
+
+# Shared libraries
+*.so
+*.so.*
+*.dylib
+*.dll
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Configuration files with secrets
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+config/local.json
+config/secrets.json
+
+# Test artifacts
+test_results/
+coverage/
+*.gcov
+*.gcda
+*.gcno
+
+# Package managers
+conan.lock
+vcpkg_installed/
+
+# Debian packaging
+debian/files
+debian/*.log
+debian/*.substvars
+debian/tmp/
+
+# RPM packaging
+*.rpm
+*.spec
+
+# Archives
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.zip
+*.7z
+
+# Local development
+local/
+scratch/
+experiments/
