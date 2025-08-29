@@ -56,8 +56,14 @@ jobs:
       run: |
         echo "🚀 Setting up ARM64 cross-compilation for Jetson Orin..."
         
+        # Fix sources.list to avoid problematic security repositories for ARM64
+        sudo sed -i '/^deb.*security\.ubuntu\.com/d' /etc/apt/sources.list
+        sudo sed -i '/^deb-src.*security\.ubuntu\.com/d' /etc/apt/sources.list
+        
         # Add ARM64 architecture support
         sudo dpkg --add-architecture arm64
+        
+        # Update with fixed repositories
         sudo apt-get update
         
         # Install cross-compilation toolchain
