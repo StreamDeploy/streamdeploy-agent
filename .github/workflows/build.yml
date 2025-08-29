@@ -56,16 +56,18 @@ jobs:
       run: |
         echo "🚀 Setting up ARM64 cross-compilation for Jetson Orin..."
         
-        # Completely disable security repositories that don't have ARM64 packages
-        sudo rm -f /etc/apt/sources.list.d/ubuntu-security.list
-        sudo find /etc/apt/sources.list.d/ -name "*.list" -exec sudo sed -i '/security\.ubuntu\.com/d' {} \;
-        sudo sed -i '/security\.ubuntu\.com/d' /etc/apt/sources.list
+        # NUCLEAR OPTION: Completely replace all repository sources
+        sudo rm -rf /etc/apt/sources.list.d/*
+        sudo rm -f /etc/apt/sources.list
         
-        # Create a custom sources.list with working repositories including ARM64 support
+        # Create ONLY working repositories - no security repos at all
         sudo tee /etc/apt/sources.list > /dev/null <<EOF
-        deb http://archive.ubuntu.com/ubuntu/ noble main restricted universe multiverse
-        deb http://archive.ubuntu.com/ubuntu/ noble-updates main restricted universe multiverse
-        deb http://archive.ubuntu.com/ubuntu/ noble-backports main restricted universe multiverse
+        # AMD64 repositories
+        deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ noble main restricted universe multiverse
+        deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ noble-updates main restricted universe multiverse
+        deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ noble-backports main restricted universe multiverse
+        
+        # ARM64 repositories (ports only)
         deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ noble main restricted universe multiverse
         deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ noble-updates main restricted universe multiverse
         deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ noble-backports main restricted universe multiverse
