@@ -18,7 +18,7 @@ env:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30  # Prevent jobs from hanging indefinitely
+    timeout-minutes: 30
     strategy:
       matrix:
         include:
@@ -33,220 +33,242 @@ jobs:
             cross_compile: true
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install dependencies (Ubuntu)
-      if: runner.os == 'Linux'
-      run: |
-        # Retry logic for package installation
-        for i in {1..3}; do
-          if sudo apt-get update && sudo apt-get install -y build-essential cmake libcurl4-openssl-dev libssl-dev; then
-            break
-          elif [ $i -eq 3 ]; then
-            echo "Failed to install dependencies after 3 attempts"
-            exit 1
+      - name: Install dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # Retry logic for package installation
+          for i in {1..3}; do
+            if sudo apt-get update && sudo apt-get install -y build-essential cmake libcurl4-openssl-dev:amd64 libssl-dev:amd64; then
+              break
+            elif [ $i -eq 3 ]; then
+              echo "Failed to install dependencies after 3 attempts"
+              exit 1
+            else
+              echo "Attempt $i failed, retrying in 10 seconds..."
+              sleep 10
+            fi
+          done
+
+      - name: Install cross-compilation tools (ARM64)
+        if: matrix.cross_compile
+        shell: bash
+        run: |
+          echo "🚀 Setting up ARM64 cross-compilation for Jetson Orin on Ubuntu noble..."
+
+          # Enable arm64 multiarch
+          sudo dpkg --add-architecture arm64
+
+          # Clean up sources: Ubuntu 24.04 uses ubuntu.sources
+          sudo rm -f /etc/apt/sources.list
+          sudo rm -f /etc/apt/sources.list.d/*.list || true
+          sudo rm -f /etc/apt/sources.list.d/ubuntu.sources
+
+          # Recreate ubuntu.sources with explicit arch scoping
+          sudo tee /etc/apt/sources.list.d/ubuntu.sources >/dev/null <<'EOF'
+          Types: deb
+          URIs: http://archive.ubuntu.com/ubuntu
+          Suites: noble noble-updates noble-backports
+          Components: main restricted universe multiverse
+          Architectures: amd64
+
+          Types: deb
+          URIs: http://security.ubuntu.com/ubuntu
+          Suites: noble-security
+          Components: main restricted universe multiverse
+          Architectures: amd64
+
+          Types: deb
+          URIs: http://ports.ubuntu.com/ubuntu-ports
+          Suites: noble noble-updates noble-backports noble-security
+          Components: main restricted universe multiverse
+          Architectures: arm64
+          EOF
+
+          # Update and install cross toolchain + arm64 dev libs
+          for i in {1..3}; do
+            if sudo apt-get update && \
+               sudo apt-get install -y \
+                 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+                 pkg-config-aarch64-linux-gnu \
+                 libcurl4-openssl-dev:arm64 libssl-dev:arm64; then
+              break
+            elif [ $i -eq 3 ]; then
+              echo "Failed apt operations after 3 attempts"; exit 1
+            else
+              echo "Attempt $i failed, retrying in 10s..."; sleep 10
+            fi
+          done
+
+          aarch64-linux-gnu-gcc --version
+          aarch64-linux-gnu-g++ --version
+
+          echo "✅ ARM64 multiarch and ports configured."
+          echo "ℹ️  libcurl (arm64) files present?"
+          ls -l /usr/lib/aarch64-linux-gnu/libcurl* || true
+          ls -l /usr/include/aarch64-linux-gnu/curl || true
+          echo "🎉 ARM64 cross-compilation setup complete!"
+
+      - name: Configure CMake
+        shell: bash
+        run: |
+          mkdir -p build
+          cd build
+          if [ "${{ matrix.cross_compile }}" = "true" ]; then
+            echo "🔧 Configuring CMake for ARM64 cross-compilation..."
+            cmake .. -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+                     -DCMAKE_SYSTEM_NAME=Linux \
+                     -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+                     -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+                     -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+                     -DCMAKE_LIBRARY_ARCHITECTURE=aarch64-linux-gnu \
+                     -DPKG_CONFIG_EXECUTABLE=pkg-config-aarch64-linux-gnu
           else
-            echo "Attempt $i failed, retrying in 10 seconds..."
-            sleep 10
+            echo "🔧 Configuring CMake for native AMD64 build..."
+            cmake .. -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
           fi
-        done
 
-    - name: Install cross-compilation tools (ARM64)
-      if: matrix.cross_compile
-      run: |
-        echo "🚀 Setting up ARM64 cross-compilation for Jetson Orin..."
-        
-        # NUCLEAR OPTION: Completely replace all repository sources
-        sudo rm -rf /etc/apt/sources.list.d/*
-        sudo rm -f /etc/apt/sources.list
-        
-        # Create ONLY working repositories - no security repos at all
-        sudo tee /etc/apt/sources.list > /dev/null <<EOF
-        # AMD64 repositories
-        deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ noble main restricted universe multiverse
-        deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ noble-updates main restricted universe multiverse
-        deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ noble-backports main restricted universe multiverse
-        
-        # ARM64 repositories (ports only)
-        deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ noble main restricted universe multiverse
-        deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ noble-updates main restricted universe multiverse
-        deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ noble-backports main restricted universe multiverse
-        EOF
-        
-        # Add ARM64 architecture support
-        sudo dpkg --add-architecture arm64
-        
-        # Update with clean repositories
-        sudo apt-get update
-        
-        # Install cross-compilation toolchain
-        sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-        
-        # Install ARM64 libcurl and SSL libraries directly via multiarch
-        sudo apt-get install -y libcurl4-openssl-dev:arm64 libssl-dev:arm64
-        
-        # Verify cross-compiler installation
-        aarch64-linux-gnu-gcc --version
-        aarch64-linux-gnu-g++ --version
-        
-        # Set sysroot for CMake
-        echo "CROSS_SYSROOT=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
-        
-        # Verify ARM64 libraries are installed
-        echo "✅ Verifying ARM64 libcurl installation..."
-        ls -la /usr/lib/aarch64-linux-gnu/libcurl* || echo "libcurl files not found in expected location"
-        ls -la /usr/include/aarch64-linux-gnu/curl/ || echo "curl headers not found"
-        
-        echo "🎉 ARM64 cross-compilation setup complete!"
+      - name: Build
+        shell: bash
+        run: |
+          cd build
+          cmake --build . --config ${{ env.BUILD_TYPE }} -j"$(nproc)" || {
+            echo "Build failed, showing configuration details:"
+            echo "=== CMake Cache ==="
+            cat CMakeCache.txt || echo "No CMakeCache.txt found"
+            echo "=== Build Directory Contents ==="
+            ls -la
+            echo "=== CMake Error Log ==="
+            cat CMakeFiles/CMakeError.log || echo "No CMakeError.log found"
+            exit 1
+          }
 
-    - name: Configure CMake
-      run: |
-        mkdir build
-        cd build
-        if [ "${{ matrix.cross_compile }}" = "true" ]; then
-          echo "🔧 Configuring CMake for ARM64 cross-compilation (Jetson Orin)..."
-          echo "Using sysroot: $CROSS_SYSROOT"
-          
-          # Standard ARM64 cross-compilation configuration
-          cmake .. -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
-                   -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
-                   -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
-                   -DCMAKE_SYSTEM_NAME=Linux \
-                   -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
-                   -DCMAKE_FIND_ROOT_PATH="$CROSS_SYSROOT" \
-                   -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
-                   -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
-                   -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
-                   -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
-        else
-          echo "🔧 Configuring CMake for native AMD64 build..."
-          cmake .. -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
-        fi
+      - name: Test
+        if: '!matrix.cross_compile'
+        working-directory: build
+        shell: bash
+        run: |
+          # Add basic smoke test
+          ./streamdeploy-agent --version || echo "Version check failed, but binary exists"
+          file ./streamdeploy-agent
 
-    - name: Build
-      run: |
-        cd build
-        cmake --build . --config ${{env.BUILD_TYPE}} -j$(nproc) || {
-          echo "Build failed, showing configuration details:"
-          echo "=== CMake Cache ==="
-          cat CMakeCache.txt || echo "No CMakeCache.txt found"
-          echo "=== Build Directory Contents ==="
-          ls -la
-          echo "=== CMake Error Log ==="
-          cat CMakeFiles/CMakeError.log || echo "No CMakeError.log found"
-          exit 1
-        }
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          cd build
+          cp streamdeploy-agent ${{ matrix.asset_name }}
+          strip ${{ matrix.asset_name }} || true
+          chmod +x ${{ matrix.asset_name }}
 
-    - name: Test
-      if: '!matrix.cross_compile'
-      working-directory: build
-      run: |
-        # Add basic smoke test
-        ./streamdeploy-agent --version || echo "Version check failed, but binary exists"
-        file ./streamdeploy-agent
-
-    - name: Prepare artifact
-      run: |
-        cd build
-        cp streamdeploy-agent ${{ matrix.asset_name }}
-        strip ${{ matrix.asset_name }} || true
-        chmod +x ${{ matrix.asset_name }}
-
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ matrix.asset_name }}
-        path: build/${{ matrix.asset_name }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: build/${{ matrix.asset_name }}
 
   create-installer:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: build
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Create install script
-      run: |
-        cat > install.sh << 'EOF'
-        #!/usr/bin/env bash
-        set -euo pipefail
+      - name: Create install script
+        shell: bash
+        run: |
+          cat > install.sh << 'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
 
-        API_BASE=${API_BASE:-https://api.streamdeploy.com}
-        DEVICE_BASE=${DEVICE_BASE:-https://device.streamdeploy.com}
-        TOKEN=""
-        FORCE=0
+          API_BASE=${API_BASE:-https://api.streamdeploy.com}
+          DEVICE_BASE=${DEVICE_BASE:-https://device.streamdeploy.com}
+          TOKEN=""
+          FORCE=0
 
-        usage() {
-          echo "Usage: $0 [--token TOKEN] [--api-base URL] [--device-base URL] [--force]"
-        }
+          usage() {
+            echo "Usage: $0 [--token TOKEN] [--api-base URL] [--device-base URL] [--force]"
+          }
 
-        while [[ $# -gt 0 ]]; do
-          case "$1" in
-            --token) TOKEN="$2"; shift 2;;
-            --api-base) API_BASE="$2"; shift 2;;
-            --device-base) DEVICE_BASE="$2"; shift 2;;
-            --force) FORCE=1; shift;;
-            -h|--help) usage; exit 0;;
-            *) echo "Unknown arg: $1"; usage; exit 1;;
-          esac
-        done
+          while [[ $# -gt 0 ]]; do
+            case "$1" in
+              --token) TOKEN="$2"; shift 2;;
+              --api-base) API_BASE="$2"; shift 2;;
+              --device-base) DEVICE_BASE="$2"; shift 2;;
+              --force) FORCE=1; shift;;
+              -h|--help) usage; exit 0;;
+              *) echo "Unknown arg: $1"; usage; exit 1;;
+            esac
+          done
 
-        if [[ -z "${TOKEN:-}" && -z "${SD_BOOTSTRAP_TOKEN:-}" ]]; then
-          echo "Provide --token or export SD_BOOTSTRAP_TOKEN"; exit 1
-        fi
-        TOKEN="${TOKEN:-${SD_BOOTSTRAP_TOKEN}}"
-
-        echo "API_BASE=$API_BASE"
-        echo "DEVICE_BASE=$DEVICE_BASE"
-
-        # Ensure dependencies (Debian/Ubuntu)
-        if command -v apt-get >/dev/null 2>&1; then
-          sudo apt-get update -y >/dev/null || true
-          sudo apt-get install -y jq curl openssl python3 build-essential cmake docker.io >/dev/null
-          sudo systemctl enable --now docker >/dev/null 2>&1 || true
-        fi
-
-        # Try prebuilt binary first, else build from source
-        ARCH="$(uname -m)"
-        case "$ARCH" in
-          x86_64) ASSET="streamdeploy-agent-linux-amd64" ;;
-          aarch64|arm64) ASSET="streamdeploy-agent-linux-arm64" ;;
-          *) ASSET="";;
-        esac
-
-        install_agent_bin() {
-          sudo install -m 0755 "$1" /usr/local/bin/streamdeploy-agent
-          if [[ ! -f /etc/systemd/system/streamdeploy-agent.service ]]; then
-            cat <<'UNIT' | sudo tee /etc/systemd/system/streamdeploy-agent.service >/dev/null
-        [Unit]
-        Description=StreamDeploy Pull Device Agent
-        After=network-online.target docker.service
-        Wants=network-online.target docker.service
-
-        [Service]
-        Type=simple
-        ExecStart=/usr/local/bin/streamdeploy-agent /etc/streamdeploy/agent.json
-        Restart=always
-        RestartSec=5
-        User=root
-
-        [Install]
-        WantedBy=multi-user.target
-        UNIT
-            sudo systemctl daemon-reload
-            sudo systemctl enable --now streamdeploy-agent || true
+          if [[ -z "${TOKEN:-}" && -z "${SD_BOOTSTRAP_TOKEN:-}" ]]; then
+            echo "Provide --token or export SD_BOOTSTRAP_TOKEN"; exit 1
           fi
-        }
+          TOKEN="${TOKEN:-${SD_BOOTSTRAP_TOKEN}}"
 
-        if [[ -n "$ASSET" ]]; then
-          TMP="$(mktemp -d)"
-          cd "$TMP"
-          URL="https://github.com/StreamDeploy/streamdeploy-agent/releases/latest/download/$ASSET"
-          if curl -fsSLo "$ASSET" "$URL"; then
-            chmod +x "$ASSET"
-            install_agent_bin "$ASSET"
+          echo "API_BASE=$API_BASE"
+          echo "DEVICE_BASE=$DEVICE_BASE"
+
+          # Ensure dependencies (Debian/Ubuntu)
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update -y >/dev/null || true
+            sudo apt-get install -y jq curl openssl python3 build-essential cmake docker.io >/dev/null
+            sudo systemctl enable --now docker >/dev/null 2>&1 || true
+          fi
+
+          # Try prebuilt binary first, else build from source
+          ARCH="$(uname -m)"
+          case "$ARCH" in
+            x86_64) ASSET="streamdeploy-agent-linux-amd64" ;;
+            aarch64|arm64) ASSET="streamdeploy-agent-linux-arm64" ;;
+            *) ASSET="";;
+          esac
+
+          install_agent_bin() {
+            sudo install -m 0755 "$1" /usr/local/bin/streamdeploy-agent
+            if [[ ! -f /etc/systemd/system/streamdeploy-agent.service ]]; then
+              cat <<'UNIT' | sudo tee /etc/streamdeploy/streamdeploy-agent.service >/dev/null
+          [Unit]
+          Description=StreamDeploy Pull Device Agent
+          After=network-online.target docker.service
+          Wants=network-online.target docker.service
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/local/bin/streamdeploy-agent /etc/streamdeploy/agent.json
+          Restart=always
+          RestartSec=5
+          User=root
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+              sudo systemctl daemon-reload
+              sudo systemctl enable --now streamdeploy-agent || true
+            fi
+          }
+
+          if [[ -n "$ASSET" ]]; then
+            TMP="$(mktemp -d)"
+            cd "$TMP"
+            URL="https://github.com/StreamDeploy/streamdeploy-agent/releases/latest/download/$ASSET"
+            if curl -fsSLo "$ASSET" "$URL"; then
+              chmod +x "$ASSET"
+              install_agent_bin "$ASSET"
+            else
+              echo "No prebuilt $ASSET found, building from source..."
+              if curl -fsSL https://github.com/StreamDeploy/streamdeploy-agent/archive/refs/heads/main.tar.gz | tar xz; then
+                cd streamdeploy-agent-main/scripts
+                sudo bash ./build.sh
+              else
+                echo "Error: Unable to download source code from GitHub."
+                echo "Please check your internet connection and try again."
+                exit 1
+              fi
+            fi
           else
-            echo "No prebuilt $ASSET found, building from source..."
+            echo "Unknown arch $(uname -m), building from source..."
             if curl -fsSL https://github.com/StreamDeploy/streamdeploy-agent/archive/refs/heads/main.tar.gz | tar xz; then
               cd streamdeploy-agent-main/scripts
               sudo bash ./build.sh
@@ -256,37 +278,26 @@ jobs:
               exit 1
             fi
           fi
-        else
-          echo "Unknown arch $(uname -m), building from source..."
-          if curl -fsSL https://github.com/StreamDeploy/streamdeploy-agent/archive/refs/heads/main.tar.gz | tar xz; then
-            cd streamdeploy-agent-main/scripts
-            sudo bash ./build.sh
-          else
-            echo "Error: Unable to download source code from GitHub."
-            echo "Please check your internet connection and try again."
-            exit 1
+
+          # Minimal config if missing
+          sudo mkdir -p /etc/streamdeploy
+          if [[ ! -f /etc/streamdeploy/agent.json ]]; then
+            echo '{"pki_dir":"/etc/streamdeploy/pki"}' | sudo tee /etc/streamdeploy/agent.json >/dev/null
           fi
-        fi
 
-        # Minimal config if missing
-        sudo mkdir -p /etc/streamdeploy
-        if [[ ! -f /etc/streamdeploy/agent.json ]]; then
-          echo '{"pki_dir":"/etc/streamdeploy/pki"}' | sudo tee /etc/streamdeploy/agent.json >/dev/null
-        fi
+          # Fetch enrollment helper from backend and run it
+          ENROLLER="$(mktemp)"
+          curl -fsSL "$API_BASE/v1-app/enroll/enroll-device.sh" -o "$ENROLLER"
+          sudo bash "$ENROLLER" --api-base "$API_BASE" --device-base "$DEVICE_BASE" --token "$TOKEN" ${FORCE:+--force}
+          EOF
 
-        # Fetch enrollment helper from backend and run it
-        ENROLLER="$(mktemp)"
-        curl -fsSL "$API_BASE/v1-app/enroll/enroll-device.sh" -o "$ENROLLER"
-        sudo bash "$ENROLLER" --api-base "$API_BASE" --device-base "$DEVICE_BASE" --token "$TOKEN" ${FORCE:+--force}
-        EOF
+          chmod +x install.sh
 
-        chmod +x install.sh
-
-    - name: Upload install script
-      uses: actions/upload-artifact@v4
-      with:
-        name: install.sh
-        path: install.sh
+      - name: Upload install script
+        uses: actions/upload-artifact@v4
+        with:
+          name: install.sh
+          path: install.sh
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
@@ -296,23 +307,23 @@ jobs:
     permissions:
       contents: write
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
 
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          streamdeploy-agent-linux-amd64/streamdeploy-agent-linux-amd64
-          streamdeploy-agent-linux-arm64/streamdeploy-agent-linux-arm64
-          install.sh/install.sh
-        draft: false
-        prerelease: false
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            streamdeploy-agent-linux-amd64/streamdeploy-agent-linux-amd64
+            streamdeploy-agent-linux-arm64/streamdeploy-agent-linux-arm64
+            install.sh/install.sh
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   test-install:
     if: github.event_name == 'pull_request'
@@ -320,15 +331,17 @@ jobs:
     timeout-minutes: 10
     needs: [build, create-installer]
     steps:
-    - name: Download artifacts
-      uses: actions/download-artifact@v4
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
 
-    - name: Test install script syntax
-      run: |
-        bash -n install.sh/install.sh
-        echo "Install script syntax is valid"
+      - name: Test install script syntax
+        shell: bash
+        run: |
+          bash -n install.sh/install.sh
+          echo "Install script syntax is valid"
 
-    - name: Test binary execution
-      run: |
-        chmod +x streamdeploy-agent-linux-amd64/streamdeploy-agent-linux-amd64
-        ./streamdeploy-agent-linux-amd64/streamdeploy-agent-linux-amd64 --version || echo "Version check completed"
+      - name: Test binary execution
+        shell: bash
+        run: |
+          chmod +x streamdeploy-agent-linux-amd64/streamdeploy-agent-linux-amd64
+          ./streamdeploy-agent-linux-amd64/streamdeploy-agent-linux-amd64 --version || echo "Version check completed"
