@@ -7,7 +7,6 @@ on:
   pull_request:
     branches: [ main ]
 
-# Prevent multiple builds from competing for runners
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -39,16 +38,13 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          # Retry logic for package installation
           for i in {1..3}; do
-            if sudo apt-get update && sudo apt-get install -y build-essential cmake libcurl4-openssl-dev:amd64 libssl-dev:amd64; then
+            if sudo apt-get update && sudo apt-get install -y build-essential cmake pkg-config libcurl4-openssl-dev:amd64 libssl-dev:amd64; then
               break
             elif [ $i -eq 3 ]; then
-              echo "Failed to install dependencies after 3 attempts"
-              exit 1
+              echo "Failed to install dependencies after 3 attempts"; exit 1
             else
-              echo "Attempt $i failed, retrying in 10 seconds..."
-              sleep 10
+              echo "Attempt $i failed, retrying in 10 seconds..."; sleep 10
             fi
           done
 
@@ -87,12 +83,11 @@ jobs:
           Architectures: arm64
           EOF
 
-          # Update and install cross toolchain + arm64 dev libs
+          # Update and install cross toolchain + ARM64 libs
           for i in {1..3}; do
             if sudo apt-get update && \
                sudo apt-get install -y \
                  gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-                 pkg-config-aarch64-linux-gnu \
                  libcurl4-openssl-dev:arm64 libssl-dev:arm64; then
               break
             elif [ $i -eq 3 ]; then
@@ -106,7 +101,6 @@ jobs:
           aarch64-linux-gnu-g++ --version
 
           echo "✅ ARM64 multiarch and ports configured."
-          echo "ℹ️  libcurl (arm64) files present?"
           ls -l /usr/lib/aarch64-linux-gnu/libcurl* || true
           ls -l /usr/include/aarch64-linux-gnu/curl || true
           echo "🎉 ARM64 cross-compilation setup complete!"
@@ -118,13 +112,19 @@ jobs:
           cd build
           if [ "${{ matrix.cross_compile }}" = "true" ]; then
             echo "🔧 Configuring CMake for ARM64 cross-compilation..."
+
+            # Point pkg-config at ARM64 .pc files (Noble has only generic pkg-config)
+            export PKG_CONFIG=/usr/bin/pkg-config
+            export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+            export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+
             cmake .. -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
                      -DCMAKE_SYSTEM_NAME=Linux \
                      -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
                      -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
                      -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
                      -DCMAKE_LIBRARY_ARCHITECTURE=aarch64-linux-gnu \
-                     -DPKG_CONFIG_EXECUTABLE=pkg-config-aarch64-linux-gnu
+                     -DPKG_CONFIG_EXECUTABLE=/usr/bin/pkg-config
           else
             echo "🔧 Configuring CMake for native AMD64 build..."
             cmake .. -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
@@ -150,7 +150,6 @@ jobs:
         working-directory: build
         shell: bash
         run: |
-          # Add basic smoke test
           ./streamdeploy-agent --version || echo "Version check failed, but binary exists"
           file ./streamdeploy-agent
 
@@ -228,7 +227,7 @@ jobs:
           install_agent_bin() {
             sudo install -m 0755 "$1" /usr/local/bin/streamdeploy-agent
             if [[ ! -f /etc/systemd/system/streamdeploy-agent.service ]]; then
-              cat <<'UNIT' | sudo tee /etc/streamdeploy/streamdeploy-agent.service >/dev/null
+              cat <<'UNIT' | sudo tee /etc/systemd/system/streamdeploy-agent.service >/dev/null
           [Unit]
           Description=StreamDeploy Pull Device Agent
           After=network-online.target docker.service
@@ -308,10 +307,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
-
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -333,13 +330,11 @@ jobs:
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
-
       - name: Test install script syntax
         shell: bash
         run: |
           bash -n install.sh/install.sh
           echo "Install script syntax is valid"
-
       - name: Test binary execution
         shell: bash
         run: |
