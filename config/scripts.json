@@ -1,0 +1,18 @@
+[
+  {
+    "name": "health_check",
+    "cmd": "curl -f http://localhost:80/healthz || echo 'unhealthy'"
+  },
+  {
+    "name": "system_info",
+    "cmd": "uname -a"
+  },
+  {
+    "name": "disk_check",
+    "cmd": "df -h /"
+  },
+  {
+    "name": "test",
+    "cmd": "ls"
+  }
+]

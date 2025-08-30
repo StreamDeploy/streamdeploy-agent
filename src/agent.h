@@ -101,6 +101,17 @@ private:
     // payload builders
     nlohmann::json buildDeviceFacts();
     nlohmann::json buildStatusUpdatePayload();
+    
+    // metrics collection
+    nlohmann::json collectSystemMetrics();
+    nlohmann::json collectContainerMetrics();
+    nlohmann::json collectCustomMetrics();
+    nlohmann::json collectEnvironmentVariables();
+    nlohmann::json collectScripts();
+    
+    // heartbeat storage
+    void saveHeartbeatData(const nlohmann::json& heartbeat);
+    nlohmann::json loadLastHeartbeat();
 
     // actions from desired state
     void actOnDesired(const nlohmann::json& desired);

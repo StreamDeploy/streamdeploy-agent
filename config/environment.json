@@ -1,0 +1,8 @@
+{
+  "DEVICE_ID": "orin01",
+  "DEVICE_CLASS": "orin",
+  "FOO": "bar",
+  "FEATURE_FLAG": "on",
+  "DEPLOYMENT_ENV": "production",
+  "LOG_LEVEL": "info"
+}

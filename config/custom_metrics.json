@@ -1,0 +1,7 @@
+{
+  "temperature": "cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null | awk '{print $1/1000}' || echo '0'",
+  "disk_usage": "df -h / | awk 'NR==2 {print $5}' | sed 's/%//'",
+  "uptime": "uptime | awk '{print $3}' | sed 's/,//'",
+  "load_avg": "uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | sed 's/,//'",
+  "test": "ok"
+}

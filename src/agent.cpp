@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <thread>
 #include <array>
+#include <sstream>
 
 using json = nlohmann::json;
 namespace fs = std::filesystem;
@@ -178,9 +179,10 @@ void Agent::performEnrollmentIfNeeded() {
         { std::ofstream out(ca); out << ca_bundle; }
         run("chmod 644 " + ca);
 
-        // Submit CSR
+        // Submit CSR (base64 encoded as expected by platform)
         const std::string csrPem = run("cat " + csr);
-        json csrReq = {{"token", cfg.bootstrapToken}, {"nonce", nonce}, {"csr", csrPem}};
+        const std::string csrBase64 = run("echo '" + csrPem + "' | base64 -w 0");
+        json csrReq = {{"token", cfg.bootstrapToken}, {"nonce", nonce}, {"csr_base64", csrBase64}};
         json csrOut = json::parse(eh.postJson("/v1-app/enroll/csr", csrReq));
 
         { std::ofstream out(crt);
@@ -272,16 +274,101 @@ json Agent::buildStatusUpdatePayload() {
     bool enrolled = st.value("enrolled", false);
     std::string updateType = (!enrolled && !cfg.bootstrapToken.empty()) ? "enrollment" : "update_check";
 
-    // Build current_state payload expected by backend
+    // Build current_state payload matching your exact format
     json current;
-    current["current_digest"] = st.value("current_digest", st.value("current_image",""));
-    current["container"]      = cfg.containerName;
-    current["device_class"]   = cfg.deviceClass;
-    current["etag"]           = st.value("last_etag", "");
+    
+    // Agent settings
+    current["agent_setting"] = {
+        {"heartbeat_frequency", std::to_string(cfg.heartbeatIntervalSeconds) + "s"},
+        {"update_frequency", "30s"},
+        {"agent_ver", "1"}
+    };
+    
+    // Environment variables
+    current["env"] = collectEnvironmentVariables();
+    
+    // Detailed container information
+    json containers = json::array();
+    try {
+        // Get detailed container info including environment and probing
+        std::string dockerCmd = "docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' --no-trunc";
+        std::string dockerOutput = run(dockerCmd);
+        
+        if (!dockerOutput.empty()) {
+            std::istringstream stream(dockerOutput);
+            std::string line;
+            bool firstLine = true;
+            
+            while (std::getline(stream, line)) {
+                if (firstLine) {
+                    firstLine = false;
+                    continue; // Skip header
+                }
+                
+                if (line.empty()) continue;
+                
+                // Parse container info
+                std::istringstream lineStream(line);
+                std::string name, image, status;
+                
+                if (std::getline(lineStream, name, '\t') &&
+                    std::getline(lineStream, image, '\t') &&
+                    std::getline(lineStream, status)) {
+                    
+                    json container;
+                    container["name"] = name;
+                    container["image"] = image;
+                    container["env"] = json::object(); // Container-specific env vars would go here
+                    
+                    // Add probing URL if this is the main app container
+                    if (name == cfg.containerName) {
+                        container["probing"] = "http://localhost:" + std::to_string(cfg.appPort) + cfg.healthPath;
+                    } else {
+                        container["probing"] = "";
+                    }
+                    
+                    // Determine status based on docker status
+                    if (status.find("Up") != std::string::npos) {
+                        container["status"] = "ready";
+                    } else {
+                        container["status"] = "stopped";
+                    }
+                    
+                    containers.push_back(container);
+                }
+            }
+        }
+        
+        // If no containers found, add a placeholder for the main app container
+        if (containers.empty()) {
+            json container;
+            container["name"] = cfg.containerName;
+            container["image"] = st.value("current_digest", st.value("current_image", "unknown"));
+            container["env"] = json::object();
+            container["probing"] = "http://localhost:" + std::to_string(cfg.appPort) + cfg.healthPath;
+            container["status"] = "stopped";
+            containers.push_back(container);
+        }
+        
+    } catch (...) {
+        // Fallback container info
+        json container;
+        container["name"] = cfg.containerName;
+        container["image"] = st.value("current_digest", st.value("current_image", "unknown"));
+        container["env"] = json::object();
+        container["probing"] = "http://localhost:" + std::to_string(cfg.appPort) + cfg.healthPath;
+        container["status"] = "unknown";
+        containers.push_back(container);
+    }
+    
+    current["containers"] = containers;
+    
+    // Scripts
+    current["scripts"] = collectScripts();
 
     json payload;
-    payload["update_type"]   = updateType;
-    payload["status"]        = "normal"; // DeviceStatus expected by backend ("normal" or "degraded")
+    payload["update_type"] = updateType;
+    payload["status"] = "normal"; // DeviceStatus expected by backend ("normal" or "degraded")
     payload["current_state"] = current;
 
     // ship buffered logs with status update (embed inside current_state to match backend schema)
@@ -444,24 +531,320 @@ void Agent::actOnDesired(const json& desired) {
     // Future actions: reboot, run-script, update-binary, etc.
 }
 
+/*==================  Metrics Collection  ==================*/
+
+json Agent::collectSystemMetrics() {
+    json metrics;
+    
+    try {
+        // CPU percentage - get from /proc/stat
+        std::string cpuLine = run("head -1 /proc/stat");
+        if (!cpuLine.empty()) {
+            // Parse CPU stats and calculate percentage (simplified approach)
+            std::string cpuUsage = run("top -bn1 | grep 'Cpu(s)' | awk '{print $2}' | sed 's/%us,//' || echo '0.0'");
+            if (!cpuUsage.empty()) {
+                try {
+                    metrics["cpu_pct"] = std::stod(cpuUsage);
+                } catch (...) {
+                    metrics["cpu_pct"] = 0.0;
+                }
+            } else {
+                metrics["cpu_pct"] = 0.0;
+            }
+        } else {
+            metrics["cpu_pct"] = 0.0;
+        }
+    } catch (...) {
+        metrics["cpu_pct"] = 0.0;
+    }
+    
+    try {
+        // Memory percentage - get from /proc/meminfo
+        std::string memTotal = run("grep '^MemTotal:' /proc/meminfo | awk '{print $2}' || echo '0'");
+        std::string memAvail = run("grep '^MemAvailable:' /proc/meminfo | awk '{print $2}' || echo '0'");
+        
+        if (!memTotal.empty() && !memAvail.empty()) {
+            try {
+                double total = std::stod(memTotal);
+                double avail = std::stod(memAvail);
+                if (total > 0) {
+                    double used_pct = ((total - avail) / total) * 100.0;
+                    metrics["mem_pct"] = used_pct;
+                } else {
+                    metrics["mem_pct"] = 0.0;
+                }
+            } catch (...) {
+                metrics["mem_pct"] = 0.0;
+            }
+        } else {
+            metrics["mem_pct"] = 0.0;
+        }
+    } catch (...) {
+        metrics["mem_pct"] = 0.0;
+    }
+    
+    return metrics;
+}
+
+json Agent::collectContainerMetrics() {
+    json containers = json::array();
+    
+    try {
+        // Get running containers with detailed info
+        std::string dockerCmd = "docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' --no-trunc";
+        std::string dockerOutput = run(dockerCmd);
+        
+        if (!dockerOutput.empty()) {
+            std::istringstream stream(dockerOutput);
+            std::string line;
+            bool firstLine = true;
+            
+            while (std::getline(stream, line)) {
+                if (firstLine) {
+                    firstLine = false;
+                    continue; // Skip header
+                }
+                
+                if (line.empty()) continue;
+                
+                // Parse container info
+                std::istringstream lineStream(line);
+                std::string name, image, status;
+                
+                if (std::getline(lineStream, name, '\t') &&
+                    std::getline(lineStream, image, '\t') &&
+                    std::getline(lineStream, status)) {
+                    
+                    json container;
+                    container["name"] = name;
+                    container["image"] = image;
+                    
+                    // Determine status based on docker status
+                    if (status.find("Up") != std::string::npos) {
+                        container["status"] = "ready";
+                    } else {
+                        container["status"] = "stopped";
+                    }
+                    
+                    containers.push_back(container);
+                }
+            }
+        }
+        
+        // If no containers found, add a placeholder for the main app container
+        if (containers.empty()) {
+            json container;
+            container["name"] = cfg.containerName;
+            container["image"] = "unknown";
+            container["status"] = "stopped";
+            containers.push_back(container);
+        }
+        
+    } catch (...) {
+        // Fallback container info
+        json container;
+        container["name"] = cfg.containerName;
+        container["image"] = "unknown";
+        container["status"] = "unknown";
+        containers.push_back(container);
+    }
+    
+    return containers;
+}
+
+json Agent::collectCustomMetrics() {
+    json custom;
+    
+    try {
+        // Load custom metrics from config file if it exists
+        std::string customMetricsFile = "/etc/streamdeploy/custom_metrics.json";
+        if (fs::exists(customMetricsFile)) {
+            std::ifstream in(customMetricsFile);
+            if (in) {
+                json customConfig;
+                in >> customConfig;
+                
+                // Execute custom metric commands
+                for (auto& [key, value] : customConfig.items()) {
+                    if (value.is_string()) {
+                        std::string result = run(value.get<std::string>());
+                        if (!result.empty()) {
+                            // Remove trailing newline
+                            if (result.back() == '\n') result.pop_back();
+                            custom[key] = result;
+                        }
+                    } else {
+                        custom[key] = value;
+                    }
+                }
+            }
+        }
+        
+        // Add default test metric if no custom metrics
+        if (custom.empty()) {
+            custom["test"] = "ok";
+        }
+        
+    } catch (...) {
+        custom["test"] = "ok";
+    }
+    
+    return custom;
+}
+
+json Agent::collectEnvironmentVariables() {
+    json env;
+    
+    try {
+        // Load environment variables from config file if it exists
+        std::string envFile = "/etc/streamdeploy/environment.json";
+        if (fs::exists(envFile)) {
+            std::ifstream in(envFile);
+            if (in) {
+                in >> env;
+            }
+        }
+        
+        // Add some default environment variables if none configured
+        if (env.empty()) {
+            env["DEVICE_ID"] = cfg.deviceId;
+            env["DEVICE_CLASS"] = cfg.deviceClass;
+        }
+        
+    } catch (...) {
+        env["DEVICE_ID"] = cfg.deviceId;
+        env["DEVICE_CLASS"] = cfg.deviceClass;
+    }
+    
+    return env;
+}
+
+json Agent::collectScripts() {
+    json scripts = json::array();
+    
+    try {
+        // Load scripts from config file if it exists
+        std::string scriptsFile = "/etc/streamdeploy/scripts.json";
+        if (fs::exists(scriptsFile)) {
+            std::ifstream in(scriptsFile);
+            if (in) {
+                in >> scripts;
+            }
+        }
+        
+        // Add default script if none configured
+        if (scripts.empty()) {
+            json script;
+            script["name"] = "health_check";
+            script["cmd"] = "echo 'healthy'";
+            scripts.push_back(script);
+        }
+        
+    } catch (...) {
+        json script;
+        script["name"] = "health_check";
+        script["cmd"] = "echo 'healthy'";
+        scripts.push_back(script);
+    }
+    
+    return scripts;
+}
+
+/*==================  Heartbeat Storage  ==================*/
+
+void Agent::saveHeartbeatData(const json& heartbeat) {
+    try {
+        std::string heartbeatFile = "/var/lib/streamdeploy/heartbeat.json";
+        fs::create_directories(fs::path(heartbeatFile).parent_path());
+        
+        // Load existing heartbeats
+        json heartbeats = json::array();
+        if (fs::exists(heartbeatFile)) {
+            std::ifstream in(heartbeatFile);
+            if (in) {
+                try {
+                    in >> heartbeats;
+                    if (!heartbeats.is_array()) {
+                        heartbeats = json::array();
+                    }
+                } catch (...) {
+                    heartbeats = json::array();
+                }
+            }
+        }
+        
+        // Add timestamp to heartbeat
+        json timestampedHeartbeat = heartbeat;
+        timestampedHeartbeat["timestamp"] = std::time(nullptr);
+        
+        // Add new heartbeat
+        heartbeats.push_back(timestampedHeartbeat);
+        
+        // Keep only last 100 heartbeats
+        if (heartbeats.size() > 100) {
+            heartbeats.erase(heartbeats.begin(), heartbeats.end() - 100);
+        }
+        
+        // Save atomically
+        std::string tmpFile = heartbeatFile + ".tmp";
+        {
+            std::ofstream out(tmpFile);
+            out << heartbeats.dump(2);
+        }
+        fs::rename(tmpFile, heartbeatFile);
+        
+    } catch (...) {
+        // Best effort - don't fail if storage fails
+    }
+}
+
+json Agent::loadLastHeartbeat() {
+    try {
+        std::string heartbeatFile = "/var/lib/streamdeploy/heartbeat.json";
+        if (fs::exists(heartbeatFile)) {
+            std::ifstream in(heartbeatFile);
+            if (in) {
+                json heartbeats;
+                in >> heartbeats;
+                if (heartbeats.is_array() && !heartbeats.empty()) {
+                    return heartbeats.back();
+                }
+            }
+        }
+    } catch (...) {
+        // Return empty if loading fails
+    }
+    
+    return json::object();
+}
+
 /*==================  Heartbeat  ==================*/
 
 void Agent::sendHeartbeat() {
-    // Build Heartbeat model
+    // Build new heartbeat format matching your specification
+    json systemMetrics = collectSystemMetrics();
+    json containers = collectContainerMetrics();
+    json custom = collectCustomMetrics();
+    
     json hb{
         {"status", "normal"},
         {"agent_setting", {
             {"heartbeat_frequency", std::to_string(cfg.heartbeatIntervalSeconds) + "s"},
-            {"agent_version", "0.1.0"},
-            {"device_class", cfg.deviceClass}
+            {"update_frequency", "30s"},
+            {"agent_ver", "1"}
         }},
         {"metrics", {
-            {"uptime_s", run("cut -d. -f1 /proc/uptime")},
-            {"temps_c",  run("cat /sys/devices/virtual/thermal/thermal_zone0/temp 2>/dev/null || true")}
+            {"cpu_pct", systemMetrics.value("cpu_pct", 0.0)},
+            {"mem_pct", systemMetrics.value("mem_pct", 0.0)},
+            {"containers", containers},
+            {"custom", custom}
         }}
     };
-
-    // best-effort; ignore errors
+    
+    // Save heartbeat data locally
+    saveHeartbeatData(hb);
+    
+    // Send to platform (best-effort; ignore errors)
     try {
         http->postJson(cfg.heartbeatPath, hb, {{"X-Device-Id", cfg.deviceId}});
     } catch (...) {}

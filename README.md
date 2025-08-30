@@ -23,8 +23,14 @@ The easiest way to install the StreamDeploy agent is using our one-line installe
 export SD_BOOTSTRAP_TOKEN="your-bootstrap-token-here"
 
 # Install and enroll the agent
-curl -fsSL https://github.com/StreamDeploy/streamdeploy-agent/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://api.streamdeploy.com/v1-app/enroll/install.sh | sudo sh
 ```
+
+This single command will:
+- Download and install the StreamDeploy agent
+- Configure it with your bootstrap token
+- Automatically enroll the device with your platform
+- Start sending heartbeats with system metrics immediately
 
 ### Manual Installation
 
