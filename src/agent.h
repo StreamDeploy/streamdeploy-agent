@@ -44,7 +44,28 @@ struct AgentConfig {
     std::string extraDockerArgs = "--gpus all"; // Orin default; override per board
     std::string stateFile = "/var/lib/streamdeploy/state.json";
 
+    // SSH tunnel configuration
+    std::string sshBastionHost = "34.170.221.16";
+    std::string sshBastionUser = "tonyloehr";
+    int         sshBastionPort = 22;
+    bool        sshTunnelEnabled = true;
+    int         sshTunnelPort = 0; // Assigned by platform during enrollment
+    std::string sshKeyPath;        // Device-specific SSH private key
+    std::string sshPubKeyPath;     // Device-specific SSH public key
+
+    // Secret file paths (for provisioning-time secret injection)
+    std::string sshBastionHostFile;     // /etc/streamdeploy/secrets/ssh_bastion_host
+    std::string sshBastionUserFile;     // /etc/streamdeploy/secrets/ssh_bastion_user
+    std::string bootstrapTokenFile;     // /etc/streamdeploy/secrets/bootstrap_token
+    std::string enrollBaseUrlFile;      // /etc/streamdeploy/secrets/enroll_base_url
+    std::string deviceBaseUrlFile;      // /etc/streamdeploy/secrets/device_base_url
+
     static AgentConfig load(const std::string& path);
+
+private:
+    // Helper methods for secure secret loading
+    static std::string loadSecretFromFile(const std::string& filePath, const std::string& fallbackValue, const std::string& secretName);
+    static std::string readSecureFile(const std::string& filePath);
 };
 
 class Agent {
@@ -86,4 +107,19 @@ private:
     void deployContainerAB(const std::string& image, const std::string& version,
                            const nlohmann::json& env, const std::string& args);
     void sendHeartbeat();
+
+    // SSH tunnel management
+    void setupSSHKeys();
+    void establishSSHTunnel();
+    void monitorSSHTunnelHealth();
+    bool isSSHTunnelHealthy();
+    void executeSSHCommand(const std::string& command);
+    nlohmann::json getSSHStatus();
+    void updateSSHState(nlohmann::json& currentState);
+
+private:
+    // SSH tunnel state
+    bool sshTunnelActive = false;
+    std::chrono::steady_clock::time_point lastSSHCheck;
+    std::string sshTunnelPid;
 };

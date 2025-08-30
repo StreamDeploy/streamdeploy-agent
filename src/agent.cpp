@@ -45,6 +45,30 @@ AgentConfig AgentConfig::load(const std::string& path) {
     c.containerName   = j.value("container_name","sd-app");
     c.extraDockerArgs = j.value("extra_docker_args","--gpus all");
     c.stateFile       = j.value("state_file","/var/lib/streamdeploy/state.json");
+
+    // SSH tunnel configuration
+    c.sshBastionHost  = j.value("ssh_bastion_host", "34.170.221.16");
+    c.sshBastionUser  = j.value("ssh_bastion_user", "tonyloehr");
+    c.sshBastionPort  = j.value("ssh_bastion_port", 22);
+    c.sshTunnelEnabled = j.value("ssh_tunnel_enabled", true);
+    c.sshTunnelPort   = j.value("ssh_tunnel_port", 0);
+    c.sshKeyPath      = j.value("ssh_key_path", c.pkiDir + "/ssh_" + c.deviceId);
+    c.sshPubKeyPath   = j.value("ssh_pubkey_path", c.pkiDir + "/ssh_" + c.deviceId + ".pub");
+
+    // Secret file paths (for provisioning-time secret injection)
+    c.sshBastionHostFile = j.value("ssh_bastion_host_file", "/etc/streamdeploy/secrets/ssh_bastion_host");
+    c.sshBastionUserFile = j.value("ssh_bastion_user_file", "/etc/streamdeploy/secrets/ssh_bastion_user");
+    c.bootstrapTokenFile = j.value("bootstrap_token_file", "/etc/streamdeploy/secrets/bootstrap_token");
+    c.enrollBaseUrlFile  = j.value("enroll_base_url_file", "/etc/streamdeploy/secrets/enroll_base_url");
+    c.deviceBaseUrlFile  = j.value("device_base_url_file", "/etc/streamdeploy/secrets/device_base_url");
+
+    // Apply secret file precedence: file > config > default
+    c.sshBastionHost = loadSecretFromFile(c.sshBastionHostFile, c.sshBastionHost, "ssh_bastion_host");
+    c.sshBastionUser = loadSecretFromFile(c.sshBastionUserFile, c.sshBastionUser, "ssh_bastion_user");
+    c.bootstrapToken = loadSecretFromFile(c.bootstrapTokenFile, c.bootstrapToken, "bootstrap_token");
+    c.enrollBaseUrl  = loadSecretFromFile(c.enrollBaseUrlFile, c.enrollBaseUrl, "enroll_base_url");
+    c.deviceBaseUrl  = loadSecretFromFile(c.deviceBaseUrlFile, c.deviceBaseUrl, "device_base_url");
+
     return c;
 }
 
@@ -177,6 +201,17 @@ void Agent::performEnrollmentIfNeeded() {
         st["enrolled"] = true;
         saveState(st);
         logInfo("Enrollment complete; switched to mTLS");
+
+        // Setup SSH keys and tunnel after successful enrollment
+        if (cfg.sshTunnelEnabled) {
+            try {
+                setupSSHKeys();
+                establishSSHTunnel();
+                logInfo("SSH tunnel setup complete");
+            } catch (const std::exception& e) {
+                logError(std::string("SSH setup failed: ") + e.what());
+            }
+        }
     } catch (const std::exception& e) {
         logError(std::string("enrollment failed: ") + e.what());
     }
@@ -251,6 +286,10 @@ json Agent::buildStatusUpdatePayload() {
 
     // ship buffered logs with status update (embed inside current_state to match backend schema)
     flushLogsInto(current);
+    
+    // Add SSH tunnel status to current_state
+    updateSSHState(current);
+    
     // assign accumulated current_state
     payload["current_state"] = current;
 
@@ -464,6 +503,270 @@ void Agent::tick() {
         logError(std::string("status-update failed: ") + e.what());
     }
 
+    // 2) SSH tunnel health monitoring (if enabled)
+    if (cfg.sshTunnelEnabled) {
+        monitorSSHTunnelHealth();
+    }
+
     // 3) Heartbeat (best-effort)
     sendHeartbeat();
+}
+
+/*==================  SSH Management  ==================*/
+
+void Agent::setupSSHKeys() {
+    if (!cfg.sshTunnelEnabled) return;
+
+    // Generate SSH key pair if it doesn't exist
+    if (!fs::exists(cfg.sshKeyPath)) {
+        logInfo("Generating SSH key pair for device: " + cfg.deviceId);
+        
+        // Generate ed25519 key pair
+        std::string genCmd = "ssh-keygen -t ed25519 -C '" + cfg.deviceId + "' -f " + 
+                           cfg.sshKeyPath + " -N ''";
+        if (system(genCmd.c_str()) != 0) {
+            throw std::runtime_error("Failed to generate SSH key pair");
+        }
+        
+        // Set proper permissions
+        run("chmod 600 " + cfg.sshKeyPath);
+        run("chmod 644 " + cfg.sshPubKeyPath);
+        
+        logInfo("SSH key pair generated successfully");
+    }
+
+    // Submit public key to platform for tunnel port allocation
+    if (fs::exists(cfg.sshPubKeyPath)) {
+        try {
+            std::string pubKey = run("cat " + cfg.sshPubKeyPath);
+            // Remove trailing newline
+            if (!pubKey.empty() && pubKey.back() == '\n') {
+                pubKey.pop_back();
+            }
+            
+            json sshRegisterReq = {
+                {"device_id", cfg.deviceId},
+                {"ssh_public_key", pubKey},
+                {"device_class", cfg.deviceClass}
+            };
+            
+            // Register SSH key with platform (best-effort)
+            try {
+                json response = json::parse(http->postJson("/v1-device/ssh/register", sshRegisterReq, 
+                                                         {{"X-Device-Id", cfg.deviceId}}));
+                if (response.contains("tunnel_port")) {
+                    cfg.sshTunnelPort = response["tunnel_port"].get<int>();
+                    logInfo("Assigned SSH tunnel port: " + std::to_string(cfg.sshTunnelPort));
+                    
+                    // Save updated config
+                    saveConfigJson();
+                }
+            } catch (const std::exception& e) {
+                logError("Failed to register SSH key with platform: " + std::string(e.what()));
+            }
+        } catch (const std::exception& e) {
+            logError("Failed to read SSH public key: " + std::string(e.what()));
+        }
+    }
+}
+
+void Agent::establishSSHTunnel() {
+    if (!cfg.sshTunnelEnabled || cfg.sshTunnelPort == 0) return;
+    
+    // Check if tunnel is already active
+    if (isSSHTunnelHealthy()) {
+        logInfo("SSH tunnel already active");
+        return;
+    }
+    
+    logInfo("Establishing SSH tunnel to " + cfg.sshBastionHost + ":" + std::to_string(cfg.sshTunnelPort));
+    
+    // Kill any existing tunnel processes
+    run("pkill -f 'ssh.*" + cfg.sshBastionHost + ".*" + std::to_string(cfg.sshTunnelPort) + "'");
+    
+    // Build SSH tunnel command (similar to existing bastion setup)
+    std::string sshCmd = "ssh -f -N -T "
+                        "-o ExitOnForwardFailure=yes "
+                        "-o ServerAliveInterval=30 -o ServerAliveCountMax=3 "
+                        "-o StrictHostKeyChecking=no "
+                        "-i " + cfg.sshKeyPath + " -o IdentitiesOnly=yes "
+                        "-R 0.0.0.0:" + std::to_string(cfg.sshTunnelPort) + ":localhost:22 "
+                        + cfg.sshBastionUser + "@" + cfg.sshBastionHost;
+    
+    if (system(sshCmd.c_str()) == 0) {
+        sshTunnelActive = true;
+        lastSSHCheck = std::chrono::steady_clock::now();
+        logInfo("SSH tunnel established successfully");
+        
+        // Update state
+        auto st = loadState();
+        st["ssh_tunnel_active"] = true;
+        st["ssh_tunnel_port"] = cfg.sshTunnelPort;
+        st["ssh_tunnel_established"] = std::time(nullptr);
+        saveState(st);
+    } else {
+        throw std::runtime_error("Failed to establish SSH tunnel");
+    }
+}
+
+void Agent::monitorSSHTunnelHealth() {
+    if (!cfg.sshTunnelEnabled) return;
+    
+    auto now = std::chrono::steady_clock::now();
+    auto timeSinceLastCheck = std::chrono::duration_cast<std::chrono::seconds>(now - lastSSHCheck);
+    
+    // Check tunnel health every 60 seconds
+    if (timeSinceLastCheck.count() < 60) return;
+    
+    lastSSHCheck = now;
+    
+    bool tunnelHealthy = isSSHTunnelHealthy();
+    
+    if (sshTunnelActive && !tunnelHealthy) {
+        logError("SSH tunnel connection lost, attempting to re-establish");
+        sshTunnelActive = false;
+        try {
+            establishSSHTunnel();
+        } catch (const std::exception& e) {
+            logError("Failed to re-establish SSH tunnel: " + std::string(e.what()));
+        }
+    } else if (!sshTunnelActive && cfg.sshTunnelPort > 0) {
+        // Try to establish tunnel if we have a port assigned
+        try {
+            establishSSHTunnel();
+        } catch (const std::exception& e) {
+            logError("Failed to establish SSH tunnel: " + std::string(e.what()));
+        }
+    }
+}
+
+bool Agent::isSSHTunnelHealthy() {
+    if (!cfg.sshTunnelEnabled || cfg.sshTunnelPort == 0) return false;
+    
+    // Check if SSH process is running
+    std::string checkCmd = "pgrep -f 'ssh.*" + cfg.sshBastionHost + ".*" + 
+                          std::to_string(cfg.sshTunnelPort) + "' > /dev/null 2>&1";
+    return system(checkCmd.c_str()) == 0;
+}
+
+void Agent::executeSSHCommand(const std::string& command) {
+    // TODO: Implement SSH command execution for Phase 2
+    // This will be used for SSH-based deployments
+    logInfo("SSH command execution requested: " + command);
+}
+
+nlohmann::json Agent::getSSHStatus() {
+    json status;
+    status["enabled"] = cfg.sshTunnelEnabled;
+    status["tunnel_active"] = sshTunnelActive;
+    status["tunnel_port"] = cfg.sshTunnelPort;
+    status["bastion_host"] = cfg.sshBastionHost;
+    status["last_check"] = std::chrono::duration_cast<std::chrono::seconds>(
+        lastSSHCheck.time_since_epoch()).count();
+    
+    if (cfg.sshTunnelEnabled && fs::exists(cfg.sshPubKeyPath)) {
+        std::string pubKey = run("cat " + cfg.sshPubKeyPath);
+        if (!pubKey.empty() && pubKey.back() == '\n') {
+            pubKey.pop_back();
+        }
+        // Get fingerprint for identification
+        std::string fingerprint = run("ssh-keygen -lf " + cfg.sshPubKeyPath + " | awk '{print $2}'");
+        if (!fingerprint.empty() && fingerprint.back() == '\n') {
+            fingerprint.pop_back();
+        }
+        status["public_key_fingerprint"] = fingerprint;
+    }
+    
+    return status;
+}
+
+void Agent::updateSSHState(nlohmann::json& currentState) {
+    if (!cfg.sshTunnelEnabled) return;
+    
+    json sshStatus = getSSHStatus();
+    currentState["ssh_tunnel"] = sshStatus;
+}
+
+/*==================  Secret File Management  ==================*/
+
+std::string AgentConfig::loadSecretFromFile(const std::string& filePath, const std::string& fallbackValue, const std::string& secretName) {
+    if (filePath.empty()) {
+        return fallbackValue;
+    }
+    
+    try {
+        std::string secretValue = readSecureFile(filePath);
+        if (!secretValue.empty()) {
+            // Log successful secret loading (without revealing the secret)
+            std::ofstream logFile("/var/log/streamdeploy-agent/agent.log", std::ios::app);
+            if (logFile) {
+                long long ts = (long long)std::time(nullptr);
+                logFile << ts << " [info] Loaded " << secretName << " from secure file: " << filePath << std::endl;
+            }
+            return secretValue;
+        }
+    } catch (const std::exception& e) {
+        // Log error but continue with fallback
+        std::ofstream logFile("/var/log/streamdeploy-agent/agent.log", std::ios::app);
+        if (logFile) {
+            long long ts = (long long)std::time(nullptr);
+            logFile << ts << " [warn] Failed to load " << secretName << " from " << filePath << ": " << e.what() << ", using fallback" << std::endl;
+        }
+    }
+    
+    // Use fallback value and log the source
+    if (!fallbackValue.empty()) {
+        std::ofstream logFile("/var/log/streamdeploy-agent/agent.log", std::ios::app);
+        if (logFile) {
+            long long ts = (long long)std::time(nullptr);
+            logFile << ts << " [info] Using " << secretName << " from config file (fallback)" << std::endl;
+        }
+    }
+    
+    return fallbackValue;
+}
+
+std::string AgentConfig::readSecureFile(const std::string& filePath) {
+    if (filePath.empty()) {
+        throw std::runtime_error("Empty file path provided");
+    }
+    
+    // Check if file exists
+    if (!fs::exists(filePath)) {
+        throw std::runtime_error("Secret file does not exist: " + filePath);
+    }
+    
+    // Check file permissions for security
+    auto perms = fs::status(filePath).permissions();
+    if ((perms & fs::perms::group_read) != fs::perms::none ||
+        (perms & fs::perms::group_write) != fs::perms::none ||
+        (perms & fs::perms::others_read) != fs::perms::none ||
+        (perms & fs::perms::others_write) != fs::perms::none) {
+        throw std::runtime_error("Secret file has insecure permissions (should be 600): " + filePath);
+    }
+    
+    // Read file contents
+    std::ifstream file(filePath);
+    if (!file) {
+        throw std::runtime_error("Cannot open secret file: " + filePath);
+    }
+    
+    std::string content;
+    std::string line;
+    while (std::getline(file, line)) {
+        if (!content.empty()) {
+            content += "\n";
+        }
+        content += line;
+    }
+    
+    // Trim whitespace
+    content.erase(0, content.find_first_not_of(" \t\n\r"));
+    content.erase(content.find_last_not_of(" \t\n\r") + 1);
+    
+    if (content.empty()) {
+        throw std::runtime_error("Secret file is empty: " + filePath);
+    }
+    
+    return content;
 }

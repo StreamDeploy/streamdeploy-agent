@@ -26,5 +26,11 @@
 
   "container_name": "sd-app",
   "extra_docker_args": "",
-  "state_file": "/var/lib/streamdeploy/state.json"
+  "state_file": "/var/lib/streamdeploy/state.json",
+
+  "ssh_bastion_host": "34.170.221.16",
+  "ssh_bastion_user": "tonyloehr",
+  "ssh_bastion_port": 22,
+  "ssh_tunnel_enabled": true,
+  "ssh_tunnel_port": 0
 }

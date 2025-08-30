@@ -124,9 +124,26 @@ The agent uses a JSON configuration file located at `/etc/streamdeploy/agent.jso
   "device_base": "https://device.streamdeploy.com",
   "heartbeat_interval": "30s",
   "update_check_interval": "5m",
-  "log_level": "info"
+  "log_level": "info",
+  "ssh_tunnel_enabled": true,
+  "ssh_bastion_host": "34.170.221.16"
 }
 ```
+
+### Secret Management
+
+The agent supports secure secret management through provisioning-time injection from Google Cloud Secret Manager. Secrets can be provided via secure files with automatic fallback to configuration values:
+
+```json
+{
+  "ssh_bastion_host": "34.170.221.16",
+  "ssh_bastion_host_file": "/etc/streamdeploy/secrets/ssh_bastion_host",
+  "bootstrap_token": "",
+  "bootstrap_token_file": "/etc/streamdeploy/secrets/bootstrap_token"
+}
+```
+
+See [Secret Management Documentation](docs/SECRET-MANAGEMENT.md) for detailed setup instructions.
 
 ### Configuration Options
 
