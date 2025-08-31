@@ -1,14 +1,13 @@
 [Unit]
-Description=StreamDeploy Pull Device Agent
-After=network-online.target docker.service
-Wants=network-online.target docker.service
+Description=StreamDeploy Agent
+After=network.target
 
 [Service]
 Type=simple
+User=root
 ExecStart=/usr/local/bin/streamdeploy-agent /etc/streamdeploy/agent.json
 Restart=always
-RestartSec=5
-User=root
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
