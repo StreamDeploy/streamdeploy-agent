@@ -83,7 +83,6 @@ detect_arch() {
 }
 
 
-
 # Detect operating system and package manager
 detect_os() {
     if command -v apt-get >/dev/null 2>&1; then
