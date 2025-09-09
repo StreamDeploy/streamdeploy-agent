@@ -1,36 +1,17 @@
 {
-  "device_id": "orin01",
-  "device_class": "orin",
-
-  "enroll_base_url": "https://api.streamdeploy.com",
-  "device_base_url": "https://device.streamdeploy.com",
-  "base_url": "http://10.104.24.70:8080",
-  "status_path": "/v1-device/status-update",
-  "heartbeat_path": "/v1-device/heartbeat",
-
-  "pki_dir": "/etc/streamdeploy/pki",
-  "ca_cert_path": "",
-  "client_cert_path": "",
-  "client_key_path": "",
-  "client_key_pass": "",
-  "auto_enroll": true,
-
-  "max_log_buffer": 200,
-  "app_port": 80,
-  "next_port": 8081,
-  "health_path": "/healthz",
-  "health_wait_seconds": 25,
-
-  "heartbeat_interval_seconds": 15,
-  "bootstrap_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1ZjM1OTNiNy0xZjlmLTQ0ZGUtODJmMi0yOTA5YmY1YjU3NDYiLCJvcmdfaWQiOiI4YTg4MGZjMy02MjQ2LTQ4N2ItYjFlZi1hNzI0NGM4Nzk1OWQiLCJncm91cF9pZCI6IjZlZGY3MjdmLTQ0YzUtNDBjNy1iOGQ0LTJmNzg2MTU2YzY3MiIsImRldmljZV9pZCI6IjViOTk2Njk1LTlkNTYtNDQyMi1iMTYyLTliNDc2YzA0MTg0YSIsImlhdCI6MTc1NjE2MDE1NSwiZXhwIjoxNzU2MTYzNzU1LCJzY29wZSI6ImJvb3RzdHJhcCJ9.0uQbhEQmdIlYjVhrlftZ_HgJYBJo07Cf4HorvK2wGzw",
-
-  "container_name": "sd-app",
-  "extra_docker_args": "",
-  "state_file": "/var/lib/streamdeploy/state.json",
-
-  "ssh_bastion_host": "34.170.221.16",
-  "ssh_bastion_user": "tonyloehr",
-  "ssh_bastion_port": 22,
-  "ssh_tunnel_enabled": true,
-  "ssh_tunnel_port": 0
+    "device_id": "orin01",
+    "enroll_base_url": "https://api.streamdeploy.com",
+    "https_mtls_endpoint": "https://device.streamdeploy.com",
+    "mqtt_ws_mtls_endpoint": "https://mqtt.streamdeploy.com",
+    "pki_dir": "/etc/streamdeploy/pki",
+    "os_name": "ubuntu",
+    "os_version": "22.04",
+    "architecture": "x86_64",
+    "package_manager": {
+        "type": "apt",
+        "install_cmd": "apt-get install -y",
+        "check_cmd": "dpkg -l",
+        "remove_cmd": "apt-get remove -y",
+        "update_cmd": "apt-get update"
+    }
 }

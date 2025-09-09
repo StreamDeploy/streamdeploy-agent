@@ -130,9 +130,7 @@ The agent uses a JSON configuration file located at `/etc/streamdeploy/agent.jso
   "device_base": "https://device.streamdeploy.com",
   "heartbeat_interval": "30s",
   "update_check_interval": "5m",
-  "log_level": "info",
-  "ssh_tunnel_enabled": true,
-  "ssh_bastion_host": "34.170.221.16"
+  "log_level": "info"
 }
 ```
 

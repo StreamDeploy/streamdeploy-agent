@@ -1,0 +1,42 @@
+{
+    "schemaVersion": "1.0",
+    "agent_setting": {
+        "heartbeat_frequency": "15s",
+        "update_frequency": "30s",
+        "mode": "http",
+        "agent_ver": "1"
+    },
+    "containers": [
+        {
+            "name": "sd-app",
+            "image": "ghcr.io/streamdeploy/streamdeploy-app:latest",
+            "port": 80,
+            "health_path": "/health",
+            "env": {}
+        }
+    ],
+    "containerLogin": "",
+    "env": {
+    },
+    "packages": [
+        "curl", 
+        "openssl",
+        "ca-certificates",
+        "systemd",
+        "docker"
+    ],
+    "custom_metrics": {
+        "temperature": "cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null | awk '{print $1/1000}' || echo '0'",
+        "disk_usage": "df -h / | awk 'NR==2 {print $5}' | sed 's/%//'",
+        "uptime": "uptime | awk '{print $3}' | sed 's/,//'",
+        "load_avg": "uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | sed 's/,//'",
+        "test": "ok"
+    },
+    "custom_packages": {
+        "whatever-v1.2": {
+            "install": "curl -fsSL https://whatever.com/install.sh | sudo sh",
+            "check": "whatever --version",
+            "uninstall": "sudo whatever --uninstall"
+        }
+    }
+}
