@@ -86,7 +86,6 @@ check_cross_toolchain() {
     return 0
 }
 
-
 # Function to install cross-compilation toolchain
 install_cross_toolchain() {
     local arch="$1"
