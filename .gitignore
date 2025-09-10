@@ -9,7 +9,7 @@ out/
 *.out
 *.app
 streamdeploy-agent
-streamdeploy-agent-*
+streamdeploy-installer
 
 # Object files
 *.o

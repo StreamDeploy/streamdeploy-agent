@@ -271,9 +271,12 @@ check_dependencies() {
         missing_deps+=("pkg-config")
     fi
     
-    # Check for libcurl
-    if ! pkg-config --exists libcurl; then
-        missing_deps+=("libcurl-dev")
+    # Check for libcurl (try multiple package names and header files)
+    if ! pkg-config --exists libcurl && ! pkg-config --exists libcurl4-openssl; then
+        # Fallback to checking header files directly
+        if [[ ! -f /usr/include/curl/curl.h ]] && [[ ! -f /usr/local/include/curl/curl.h ]]; then
+            missing_deps+=("libcurl-dev")
+        fi
     fi
     
     # Check for openssl
@@ -284,6 +287,15 @@ check_dependencies() {
     # Check for mosquitto
     if ! pkg-config --exists libmosquitto; then
         missing_deps+=("libmosquitto-dev")
+    fi
+    
+    # Check for jsoncpp (try multiple package names and header files)
+    if ! pkg-config --exists jsoncpp && ! pkg-config --exists libjsoncpp; then
+        # Fallback to checking header files directly
+        if [[ ! -f /usr/include/json/json.h ]] && [[ ! -f /usr/local/include/json/json.h ]] && \
+           [[ ! -f /usr/include/jsoncpp/json.h ]] && [[ ! -f /usr/local/include/jsoncpp/json.h ]]; then
+            missing_deps+=("jsoncpp development headers")
+        fi
     fi
     
     if [ ${#missing_deps[@]} -ne 0 ]; then

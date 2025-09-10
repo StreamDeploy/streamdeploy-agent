@@ -324,7 +324,9 @@ check_dependencies() {
         missing_deps+=("libcurl development headers")
     fi
     
-    if [[ ! -f /usr/include/json/json.h ]] && [[ ! -f /usr/local/include/json/json.h ]]; then
+    # Check for jsoncpp headers (try multiple possible locations)
+    if [[ ! -f /usr/include/json/json.h ]] && [[ ! -f /usr/local/include/json/json.h ]] && \
+       [[ ! -f /usr/include/jsoncpp/json.h ]] && [[ ! -f /usr/local/include/jsoncpp/json.h ]]; then
         missing_deps+=("jsoncpp development headers")
     fi
     
