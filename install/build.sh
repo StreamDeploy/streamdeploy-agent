@@ -319,19 +319,53 @@ check_dependencies() {
         missing_deps+=("gcc and g++")
     fi
     
-    # Check for development libraries by trying to find headers
-    if [[ ! -f /usr/include/curl/curl.h ]] && [[ ! -f /usr/local/include/curl/curl.h ]]; then
-        missing_deps+=("libcurl development headers")
+    # Check for development libraries using pkg-config (more reliable)
+    # Check for libcurl
+    if ! pkg-config --exists libcurl 2>/dev/null; then
+        # Fallback to checking header files in multiple possible locations
+        local curl_found=false
+        for curl_path in /usr/include/curl/curl.h /usr/local/include/curl/curl.h /usr/include/x86_64-linux-gnu/curl/curl.h; do
+            if [[ -f "$curl_path" ]]; then
+                curl_found=true
+                break
+            fi
+        done
+        if [[ "$curl_found" = false ]]; then
+            missing_deps+=("libcurl development headers")
+        fi
     fi
     
-    # Check for jsoncpp headers (try multiple possible locations)
-    if [[ ! -f /usr/include/json/json.h ]] && [[ ! -f /usr/local/include/json/json.h ]] && \
-       [[ ! -f /usr/include/jsoncpp/json.h ]] && [[ ! -f /usr/local/include/jsoncpp/json.h ]]; then
-        missing_deps+=("jsoncpp development headers")
+    # Check for jsoncpp
+    if ! pkg-config --exists jsoncpp 2>/dev/null; then
+        # Fallback to checking header files in multiple possible locations
+        local jsoncpp_found=false
+        for jsoncpp_path in /usr/include/json/json.h /usr/local/include/json/json.h \
+                           /usr/include/jsoncpp/json.h /usr/local/include/jsoncpp/json.h \
+                           /usr/include/x86_64-linux-gnu/jsoncpp/json.h; do
+            if [[ -f "$jsoncpp_path" ]]; then
+                jsoncpp_found=true
+                break
+            fi
+        done
+        if [[ "$jsoncpp_found" = false ]]; then
+            missing_deps+=("jsoncpp development headers")
+        fi
     fi
     
-    if [[ ! -f /usr/include/openssl/ssl.h ]] && [[ ! -f /usr/local/include/openssl/ssl.h ]]; then
-        missing_deps+=("openssl development headers")
+    # Check for openssl
+    if ! pkg-config --exists openssl 2>/dev/null; then
+        # Fallback to checking header files in multiple possible locations
+        local openssl_found=false
+        for openssl_path in /usr/include/openssl/ssl.h /usr/local/include/openssl/ssl.h \
+                           /usr/include/x86_64-linux-gnu/openssl/ssl.h; do
+            if [[ -f "$openssl_path" ]]; then
+                openssl_found=true
+                break
+            fi
+        done
+        if [[ "$openssl_found" = false ]]; then
+            missing_deps+=("openssl development headers")
+        fi
     fi
     
     if [[ ${#missing_deps[@]} -gt 0 ]]; then
@@ -543,16 +577,17 @@ OPTIONS:
     --help, -h          Show this help message
 
 SUPPORTED ARCHITECTURES:
-    x86_64              Intel/AMD 64-bit
-    aarch64             ARM 64-bit
-    armv7l              ARM 32-bit (hard float)
+    x86_64              Intel/AMD 64-bit (native + musl static)
+    aarch64             ARM 64-bit (cross-compile + musl static)
+    armv7l              ARM 32-bit hard float (cross-compile + musl static)
 
 EXAMPLES:
     $0                          # Basic native build
     $0 --clean                  # Clean build
-    $0 --musl                   # musl static build
-    $0 --arch aarch64           # Cross-compile for ARM64
+    $0 --musl                   # musl static build for native architecture
+    $0 --arch aarch64           # Cross-compile for ARM64 (dynamic linking)
     $0 --musl --arch aarch64    # musl static build for ARM64
+    $0 --musl --arch armv7l     # musl static build for ARM32
     $0 --install-deps --clean   # Install deps and clean build
     $0 --verify                 # Build and verify
 
@@ -634,8 +669,12 @@ main() {
     
     log_info "Starting StreamDeploy Agent Installer build..."
     log_info "Target: $target_os-$target_arch"
-    log_info "Build type: $([ "$MUSL_BUILD" = true ] && echo "musl static" || [ "$STATIC_BUILD" = true ] && echo "glibc static" || echo "dynamic")"
+    log_info "Build type: $([ "$MUSL_BUILD" = true ] && echo "musl static (portable binary)" || [ "$STATIC_BUILD" = true ] && echo "glibc static" || echo "dynamic")"
     log_info "Build directory: $BUILD_DIR"
+    
+    if [[ "$MUSL_BUILD" = true ]]; then
+        log_info "Musl static build: Creates portable binary for any Linux system"
+    fi
     
     # Detect system
     detect_system || exit 1

@@ -215,24 +215,63 @@ Uses Linux inotify to monitor configuration files for changes:
 
 ## Installation
 
-1. Build the agent:
+### Multi-Architecture Build Support
+
+The agent supports building for multiple architectures with both dynamic and static (musl) linking:
+
+- **x86_64** (Intel/AMD 64-bit) - Native build + musl static
+- **aarch64** (ARM 64-bit) - Cross-compile + musl static  
+- **armv7l** (ARM 32-bit hard float) - Cross-compile + musl static
+
+### Building the Agent
+
+1. Build for native architecture:
    ```bash
    cd agent
    ./build.sh
    ```
 
-2. Install systemd service:
+2. Build with musl static linking (portable binary):
+   ```bash
+   ./build.sh --musl
+   ```
+
+3. Cross-compile for ARM64:
+   ```bash
+   ./build.sh --arch aarch64
+   ```
+
+4. Cross-compile for ARM64 with musl static:
+   ```bash
+   ./build.sh --musl --arch aarch64
+   ```
+
+5. Cross-compile for ARM32 with musl static:
+   ```bash
+   ./build.sh --musl --arch armv7l
+   ```
+
+### Installation
+
+1. Install systemd service:
    ```bash
    sudo cp streamdeploy-agent /usr/local/bin/
    sudo systemctl enable streamdeploy-agent
    sudo systemctl start streamdeploy-agent
    ```
 
-3. Check status:
+2. Check status:
    ```bash
    systemctl status streamdeploy-agent
    journalctl -u streamdeploy-agent -f
    ```
+
+### Musl Static Benefits
+
+- **Portability**: Single binary runs on any Linux distribution
+- **No Dependencies**: No external library requirements  
+- **Security**: Reduced attack surface
+- **Deployment**: Easy distribution without package manager
 
 ## Usage
 
@@ -283,8 +322,25 @@ sudo ./streamdeploy-agent /etc/streamdeploy/agent.json
 ```bash
 git clone https://github.com/StreamDeploy/streamdeploy-agent.git
 cd streamdeploy-agent/agent
+
+# Native build
 ./build.sh
+
+# Musl static build (portable)
+./build.sh --musl
+
+# Cross-compile for specific architecture
+./build.sh --arch aarch64
+./build.sh --musl --arch armv7l
 ```
+
+### Build Options
+
+- `--musl`: Build with musl static linking for maximum portability
+- `--arch ARCH`: Cross-compile for specific architecture (aarch64, armv7l)
+- `--install-deps`: Install build dependencies automatically
+- `--clean`: Clean build directory before building
+- `--debug`: Build in debug mode
 
 ### Testing
 

@@ -4,7 +4,7 @@ This Docker container provides a comprehensive build environment for the StreamD
 
 ## Overview
 
-The build container is based on Ubuntu 22.04 and includes all necessary tools and libraries for building the StreamDeploy Agent across multiple architectures. It supports both native builds and cross-compilation for ARM architectures.
+The build container is based on Ubuntu 22.04 and includes all necessary tools and libraries for building the StreamDeploy Agent across multiple architectures. It supports both native builds and cross-compilation for ARM architectures, with full musl static linking support for all target architectures.
 
 ## Supported Architectures
 
@@ -16,11 +16,11 @@ The build container is based on Ubuntu 22.04 and includes all necessary tools an
 - **ARMHF (armv7l)** - 32-bit ARM with hard float
 
 ### Architecture Support Summary
-| Architecture | Build Type | Status | Common Robotics Boards | Notes |
-|--------------|------------|--------|----------------------|-------|
-| x86_64 | Native | ✅ Supported | Intel NUC, Up Board, LattePanda, BeagleV-Fire | Default build platform |
-| ARM64 | Cross-compile | ✅ Supported | Raspberry Pi 4/5, NVIDIA Jetson Nano/Orin, Rock Pi 4, Orange Pi 5 | 64-bit ARM |
-| ARMHF (armv7l) | Cross-compile | ✅ Supported | Raspberry Pi 3/Zero, BeagleBone Black, Odroid XU4, Banana Pi | 32-bit ARM with hard float |
+| Architecture | Build Type | Status | Musl Support | Common Robotics Boards | Notes |
+|--------------|------------|--------|--------------|----------------------|-------|
+| x86_64 | Native | ✅ Supported | ✅ Static | Intel NUC, Up Board, LattePanda, BeagleV-Fire | Default build platform |
+| ARM64 | Cross-compile | ✅ Supported | ✅ Static | Raspberry Pi 4/5, NVIDIA Jetson Nano/Orin, Rock Pi 4, Orange Pi 5 | 64-bit ARM |
+| ARMHF (armv7l) | Cross-compile | ✅ Supported | ✅ Static | Raspberry Pi 3/Zero, BeagleBone Black, Odroid XU4, Banana Pi | 32-bit ARM with hard float |
 
 ## Common Robotics Boards by Architecture
 

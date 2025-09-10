@@ -124,9 +124,26 @@ The installer supports the following Linux distributions:
 
 ## Architecture Support
 
-- **x86_64** (Intel/AMD 64-bit)
-- **aarch64** (ARM 64-bit)
-- **arm** (ARM 32-bit)
+The installer supports multiple architectures with both dynamic and static (musl) linking:
+
+- **x86_64** (Intel/AMD 64-bit) - Native build + musl static
+- **aarch64** (ARM 64-bit) - Cross-compile + musl static  
+- **armv7l** (ARM 32-bit hard float) - Cross-compile + musl static
+
+### Build Types
+
+| Architecture | Native Build | Cross-Compile | Musl Static |
+|--------------|--------------|---------------|-------------|
+| x86_64 | ✅ | N/A | ✅ |
+| aarch64 | ❌ | ✅ | ✅ |
+| armv7l | ❌ | ✅ | ✅ |
+
+### Musl Static Benefits
+
+- **Portability**: Single binary runs on any Linux distribution
+- **No Dependencies**: No external library requirements
+- **Security**: Reduced attack surface
+- **Deployment**: Easy distribution without package manager
 
 ## Troubleshooting
 
@@ -171,20 +188,52 @@ sudo systemctl daemon-reload
 
 ### Building from Source
 
-To build the installer manually:
+The installer can be built for multiple architectures using the build script:
+
+```bash
+cd install
+
+# Native x86_64 build
+./build.sh
+
+# Native x86_64 musl static build
+./build.sh --musl
+
+# Cross-compile for ARM64 (dynamic)
+./build.sh --arch aarch64
+
+# Cross-compile for ARM64 (musl static)
+./build.sh --musl --arch aarch64
+
+# Cross-compile for ARM32 (musl static)
+./build.sh --musl --arch armv7l
+```
+
+#### Manual Building
+
+To build manually for specific architectures:
 
 ```bash
 cd install
 mkdir -p build && cd build
 
-# Set up musl environment
+# Native x86_64 musl build
 export CC=musl-gcc
 export CXX=musl-g++
-
-# Configure and build
 cmake -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_C_COMPILER=musl-gcc \
       -DCMAKE_CXX_COMPILER=musl-g++ \
+      -DCMAKE_EXE_LINKER_FLAGS="-static" \
+      ..
+
+# Cross-compile ARM64 with musl
+export CC=musl-gcc
+export CXX=musl-g++
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_SYSTEM_NAME=Linux \
+      -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+      -DCMAKE_C_COMPILER_TARGET=aarch64-linux-gnu \
+      -DCMAKE_CXX_COMPILER_TARGET=aarch64-linux-gnu \
       -DCMAKE_EXE_LINKER_FLAGS="-static" \
       ..
 
