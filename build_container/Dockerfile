@@ -8,12 +8,21 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -y && \
     apt-get install -y \
     build-essential cmake pkg-config git curl wget file \
-    musl-tools musl-dev \
+    musl-tools musl-dev musl-libc \
+    libc6-dev linux-libc-dev \
     gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
     gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
     libcurl4-openssl-dev libssl-dev libmosquitto-dev nlohmann-json3-dev \
     libjsoncpp-dev libnghttp2-dev libidn2-dev \
     zlib1g-dev
+
+# Set up musl toolchain properly
+RUN echo '#!/bin/bash' > /usr/bin/musl-gcc && \
+    echo 'exec gcc -static "$@"' >> /usr/bin/musl-gcc && \
+    chmod +x /usr/bin/musl-gcc && \
+    echo '#!/bin/bash' > /usr/bin/musl-g++ && \
+    echo 'exec g++ -static "$@"' >> /usr/bin/musl-g++ && \
+    chmod +x /usr/bin/musl-g++
 
 # Enable multiarch and install cross-compilation libraries
 RUN dpkg --add-architecture arm64 && \
