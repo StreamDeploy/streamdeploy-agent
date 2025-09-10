@@ -12,6 +12,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+
 # Configuration
 BUILD_DIR="build"
 BINARY_NAME="streamdeploy-agent"
