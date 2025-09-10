@@ -11,14 +11,12 @@ RUN apt-get update -y && \
     musl-tools musl-dev \
     gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
     gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
-    gcc-arm-linux-gnueabi g++-arm-linux-gnueabi \
     libcurl4-openssl-dev libssl-dev libmosquitto-dev nlohmann-json3-dev \
     libjsoncpp-dev libnghttp2-dev libidn2-dev
 
 # Enable multiarch and install cross-compilation libraries
 RUN dpkg --add-architecture arm64 && \
-    dpkg --add-architecture armhf && \
-    dpkg --add-architecture armel
+    dpkg --add-architecture armhf
 
 # Clean up existing sources to avoid conflicts
 RUN rm -f /etc/apt/sources.list.d/*.list
@@ -37,22 +35,16 @@ RUN echo "# AMD64 repositories" > /etc/apt/sources.list && \
     echo "# ARMHF repositories" >> /etc/apt/sources.list && \
     echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" >> /etc/apt/sources.list && \
     echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" >> /etc/apt/sources.list && \
-    echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" >> /etc/apt/sources.list && \
-    echo "" >> /etc/apt/sources.list && \
-    echo "# ARMEL repositories" >> /etc/apt/sources.list && \
-    echo "deb [arch=armel] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" >> /etc/apt/sources.list && \
-    echo "deb [arch=armel] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" >> /etc/apt/sources.list && \
-    echo "deb [arch=armel] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" >> /etc/apt/sources.list
+    echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" >> /etc/apt/sources.list
 
-# Install cross-compilation libraries for all architectures
+# Install cross-compilation libraries for available architectures
+# Note: ARMEL packages are not available in Ubuntu 22.04, so we skip them
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends \
     libcurl4-openssl-dev:arm64 libssl-dev:arm64 libmosquitto-dev:arm64 \
     libcurl4-openssl-dev:armhf libssl-dev:armhf libmosquitto-dev:armhf \
-    libcurl4-openssl-dev:armel libssl-dev:armel libmosquitto-dev:armel \
     libjsoncpp-dev:arm64 libnghttp2-dev:arm64 libidn2-dev:arm64 \
-    libjsoncpp-dev:armhf libnghttp2-dev:armhf libidn2-dev:armhf \
-    libjsoncpp-dev:armel libnghttp2-dev:armel libidn2-dev:armel && \
+    libjsoncpp-dev:armhf libnghttp2-dev:armhf libidn2-dev:armhf && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
