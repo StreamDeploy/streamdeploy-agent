@@ -21,12 +21,10 @@ RUN dpkg --add-architecture arm64 && \
     dpkg --add-architecture armel
 
 # Configure multiarch sources
-RUN cat > /etc/apt/sources.list.d/multiarch.list << 'EOF'
-deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse
-deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
-deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
-deb [arch=armel] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
-EOF
+RUN echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse" > /etc/apt/sources.list.d/multiarch.list && \
+    echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" >> /etc/apt/sources.list.d/multiarch.list && \
+    echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" >> /etc/apt/sources.list.d/multiarch.list && \
+    echo "deb [arch=armel] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" >> /etc/apt/sources.list.d/multiarch.list
 
 # Install cross-compilation libraries for all architectures
 RUN apt-get update -y && \
