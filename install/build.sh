@@ -220,13 +220,6 @@ install_dependencies() {
                 libssl-dev \
                 libnghttp2-dev \
                 libidn2-dev \
-                librtmp-dev \
-                libssh2-1-dev \
-                libpsl-dev \
-                libkrb5-dev \
-                libldap2-dev \
-                libzstd-dev \
-                libbrotli-dev \
                 zlib1g-dev
             ;;
         "yum"|"dnf")
@@ -241,13 +234,6 @@ install_dependencies() {
                 openssl-devel \
                 libnghttp2-devel \
                 libidn2-devel \
-                librtmp-devel \
-                libssh2-devel \
-                libpsl-devel \
-                krb5-devel \
-                openldap-devel \
-                libzstd-devel \
-                brotli-devel \
                 zlib-devel
             ;;
         "apk")
@@ -261,13 +247,6 @@ install_dependencies() {
                 openssl-dev \
                 nghttp2-dev \
                 libidn2-dev \
-                rtmpdump-dev \
-                libssh2-dev \
-                libpsl-dev \
-                krb5-dev \
-                openldap-dev \
-                zstd-dev \
-                brotli-dev \
                 zlib-dev
             ;;
         "pacman")
@@ -281,13 +260,6 @@ install_dependencies() {
                 openssl \
                 nghttp2 \
                 libidn2 \
-                rtmpdump \
-                libssh2 \
-                libpsl \
-                krb5 \
-                openldap \
-                zstd \
-                brotli \
                 zlib
             ;;
         *)

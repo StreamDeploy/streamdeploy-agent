@@ -13,8 +13,7 @@ RUN apt-get update -y && \
     gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
     libcurl4-openssl-dev libssl-dev libmosquitto-dev nlohmann-json3-dev \
     libjsoncpp-dev libnghttp2-dev libidn2-dev \
-    librtmp-dev libssh2-1-dev libpsl-dev libkrb5-dev \
-    libldap2-dev libzstd-dev libbrotli-dev zlib1g-dev
+    zlib1g-dev
 
 # Enable multiarch and install cross-compilation libraries
 RUN dpkg --add-architecture arm64 && \
@@ -37,20 +36,16 @@ RUN echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy main restricte
     echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" >> /etc/apt/sources.list
 
 # Install cross-compilation libraries for available architectures
-# Note: libcurl4-openssl-dev has conflicts with shared binaries, so we skip it
+# Only install essential packages to avoid conflicts
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends \
     libssl-dev:arm64 libmosquitto-dev:arm64 \
     libjsoncpp-dev:arm64 libidn2-dev:arm64 \
-    librtmp-dev:arm64 libssh2-1-dev:arm64 libpsl-dev:arm64 \
-    libkrb5-dev:arm64 libldap2-dev:arm64 libzstd-dev:arm64 \
-    libbrotli-dev:arm64 zlib1g-dev:arm64 && \
+    zlib1g-dev:arm64 && \
     apt-get install -y --no-install-recommends \
     libssl-dev:armhf libmosquitto-dev:armhf \
     libjsoncpp-dev:armhf libidn2-dev:armhf \
-    librtmp-dev:armhf libssh2-1-dev:armhf libpsl-dev:armhf \
-    libkrb5-dev:armhf libldap2-dev:armhf libzstd-dev:armhf \
-    libbrotli-dev:armhf zlib1g-dev:armhf && \
+    zlib1g-dev:armhf && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
