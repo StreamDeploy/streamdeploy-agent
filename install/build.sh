@@ -42,7 +42,6 @@ log_error() {
 command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
-
 # Function to get supported architectures
 get_supported_architectures() {
     echo "x86_64 aarch64 armv7l armv6l"
