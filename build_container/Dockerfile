@@ -8,7 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -y && \
     apt-get install -y \
     build-essential cmake pkg-config git curl wget file \
-    musl-tools musl-dev musl-libc \
+    musl musl-tools musl-dev \
     libc6-dev linux-libc-dev \
     gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
     gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
