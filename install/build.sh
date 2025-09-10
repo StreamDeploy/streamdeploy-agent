@@ -401,6 +401,7 @@ configure_cmake() {
         
         # musl-specific flags
         CMAKE_ARGS+=(
+            -DSTATIC_BUILD=ON
             -DCMAKE_EXE_LINKER_FLAGS="-static"
             -DCMAKE_FIND_LIBRARY_SUFFIXES=".a"
             -DCMAKE_EXE_LINK_DYNAMIC_C_FLAGS=""

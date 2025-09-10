@@ -4,7 +4,7 @@ FROM ubuntu:22.04
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install all required packages
+# Install all required packages including static libraries
 RUN apt-get update -y && \
     apt-get install -y \
     build-essential cmake pkg-config git curl wget file \
@@ -17,11 +17,8 @@ RUN apt-get update -y && \
     zlib1g-dev
 
 # Set up musl toolchain properly
-RUN echo '#!/bin/bash' > /usr/bin/musl-gcc && \
-    echo 'exec gcc -static "$@"' >> /usr/bin/musl-gcc && \
-    chmod +x /usr/bin/musl-gcc && \
-    echo '#!/bin/bash' > /usr/bin/musl-g++ && \
-    echo 'exec g++ -static "$@"' >> /usr/bin/musl-g++ && \
+RUN echo '#!/bin/bash' > /usr/bin/musl-g++ && \
+    echo 'exec musl-gcc -lstdc++ "$@"' >> /usr/bin/musl-g++ && \
     chmod +x /usr/bin/musl-g++
 
 # Enable multiarch and install cross-compilation libraries

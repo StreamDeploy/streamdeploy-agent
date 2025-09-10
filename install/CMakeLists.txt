@@ -6,24 +6,36 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Static linking configuration (enabled by build script when needed)
 # These are set by the build script for musl/static builds
-# set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
-# set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
-# set(CMAKE_EXE_LINK_DYNAMIC_C_FLAGS)
-# set(CMAKE_EXE_LINK_DYNAMIC_CXX_FLAGS)
-# set(CMAKE_SHARED_LIBRARY_C_FLAGS)
-# set(CMAKE_SHARED_LIBRARY_CXX_FLAGS)
+if(STATIC_BUILD)
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+    set(CMAKE_EXE_LINK_DYNAMIC_C_FLAGS "")
+    set(CMAKE_EXE_LINK_DYNAMIC_CXX_FLAGS "")
+    set(CMAKE_SHARED_LIBRARY_C_FLAGS "")
+    set(CMAKE_SHARED_LIBRARY_CXX_FLAGS "")
+    set(BUILD_SHARED_LIBS OFF)
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+endif()
 
 # Find required packages
 find_package(PkgConfig REQUIRED)
 
 # Find libcurl
-pkg_check_modules(CURL REQUIRED libcurl)
+if(STATIC_BUILD)
+    pkg_check_modules(CURL REQUIRED libcurl --static)
+else()
+    pkg_check_modules(CURL REQUIRED libcurl)
+endif()
 
 # Find OpenSSL
 find_package(OpenSSL REQUIRED)
 
 # Find jsoncpp
-pkg_check_modules(JSONCPP REQUIRED jsoncpp)
+if(STATIC_BUILD)
+    pkg_check_modules(JSONCPP REQUIRED jsoncpp --static)
+else()
+    pkg_check_modules(JSONCPP REQUIRED jsoncpp)
+endif()
 
 # Add executable
 add_executable(streamdeploy-installer installer.cpp)
