@@ -47,7 +47,7 @@ command_exists() {
 
 # Function to get supported architectures
 get_supported_architectures() {
-    echo "x86_64 aarch64 armv7l armv6l"
+    echo "x86_64 aarch64 armv7l"
 }
 
 # Function to get supported operating systems
@@ -67,9 +67,6 @@ get_toolchain_prefix() {
             ;;
         armv7l)
             echo "arm-linux-gnueabihf"
-            ;;
-        armv6l)
-            echo "arm-linux-gnueabi"
             ;;
         *)
             print_error "Unsupported architecture: $arch"
@@ -107,9 +104,6 @@ install_cross_toolchain() {
                     ;;
                 armv7l)
                     sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
-                    ;;
-                armv6l)
-                    sudo apt-get install -y gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
                     ;;
             esac
             ;;
@@ -579,7 +573,7 @@ show_usage() {
     echo "  --install           Install binary to /usr/local/bin (requires sudo)"
     echo "  --musl              Build with musl static linking"
     echo "  --static            Build with static linking (glibc)"
-    echo "  --arch ARCH         Target architecture (x86_64, aarch64, armv7l, armv6l)"
+    echo "  --arch ARCH         Target architecture (x86_64, aarch64, armv7l)"
     echo "  --os OS             Target operating system (linux)"
     echo "  --install-toolchain Install cross-compilation toolchain"
     echo ""
@@ -587,7 +581,6 @@ show_usage() {
     echo "  x86_64              Intel/AMD 64-bit"
     echo "  aarch64             ARM 64-bit"
     echo "  armv7l              ARM 32-bit (hard float)"
-    echo "  armv6l              ARM 32-bit (soft float)"
     echo ""
     echo "Examples:"
     echo "  $0                          # Basic native build"
