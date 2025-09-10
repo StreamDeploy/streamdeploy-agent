@@ -22,29 +22,27 @@ RUN dpkg --add-architecture arm64 && \
 RUN rm -f /etc/apt/sources.list.d/*.list
 
 # Create a clean multiarch sources configuration
-RUN echo "# AMD64 repositories" > /etc/apt/sources.list && \
-    echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse" >> /etc/apt/sources.list && \
-    echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse" >> /etc/apt/sources.list && \
-    echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse" >> /etc/apt/sources.list && \
-    echo "" >> /etc/apt/sources.list && \
-    echo "# ARM64 repositories" >> /etc/apt/sources.list && \
-    echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" >> /etc/apt/sources.list && \
-    echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" >> /etc/apt/sources.list && \
-    echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" >> /etc/apt/sources.list && \
-    echo "" >> /etc/apt/sources.list && \
-    echo "# ARMHF repositories" >> /etc/apt/sources.list && \
-    echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" >> /etc/apt/sources.list && \
-    echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" >> /etc/apt/sources.list && \
-    echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" >> /etc/apt/sources.list
+RUN printf "deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse\n" > /etc/apt/sources.list && \
+    printf "deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse\n" >> /etc/apt/sources.list && \
+    printf "deb [arch=amd64] http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse\n" >> /etc/apt/sources.list && \
+    printf "\n" >> /etc/apt/sources.list && \
+    printf "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse\n" >> /etc/apt/sources.list && \
+    printf "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse\n" >> /etc/apt/sources.list && \
+    printf "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse\n" >> /etc/apt/sources.list && \
+    printf "\n" >> /etc/apt/sources.list && \
+    printf "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse\n" >> /etc/apt/sources.list && \
+    printf "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse\n" >> /etc/apt/sources.list && \
+    printf "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse\n" >> /etc/apt/sources.list
 
 # Install cross-compilation libraries for available architectures
-# Note: ARMEL packages are not available in Ubuntu 22.04, so we skip them
+# Note: Some packages have conflicts between architectures, so we install them separately
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends \
     libcurl4-openssl-dev:arm64 libssl-dev:arm64 libmosquitto-dev:arm64 \
+    libjsoncpp-dev:arm64 libidn2-dev:arm64 && \
+    apt-get install -y --no-install-recommends \
     libcurl4-openssl-dev:armhf libssl-dev:armhf libmosquitto-dev:armhf \
-    libjsoncpp-dev:arm64 libnghttp2-dev:arm64 libidn2-dev:arm64 \
-    libjsoncpp-dev:armhf libnghttp2-dev:armhf libidn2-dev:armhf && \
+    libjsoncpp-dev:armhf libidn2-dev:armhf && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
