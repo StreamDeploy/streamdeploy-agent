@@ -284,6 +284,7 @@ check_dependencies() {
         missing_deps+=("libssl-dev")
     fi
     
+    
     # Check for mosquitto
     if ! pkg-config --exists libmosquitto; then
         missing_deps+=("libmosquitto-dev")

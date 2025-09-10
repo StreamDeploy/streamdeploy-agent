@@ -324,6 +324,7 @@ check_dependencies() {
         fi
     fi
     
+    
     # Check for openssl
     if ! pkg-config --exists openssl 2>/dev/null; then
         # Fallback to checking header files in multiple possible locations
