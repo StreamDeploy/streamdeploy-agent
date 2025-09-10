@@ -19,7 +19,10 @@ RUN apt-get update -y && \
 # Set up musl toolchain properly
 RUN echo '#!/bin/bash' > /usr/bin/musl-g++ && \
     echo 'exec musl-gcc -lstdc++ "$@"' >> /usr/bin/musl-g++ && \
-    chmod +x /usr/bin/musl-g++
+    chmod +x /usr/bin/musl-g++ && \
+    # Verify musl toolchain is working
+    musl-gcc --version && \
+    musl-g++ --version
 
 # Enable multiarch and install cross-compilation libraries
 RUN dpkg --add-architecture arm64 && \
@@ -55,6 +58,13 @@ RUN apt-get update -y && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Verify musl toolchain is properly installed and working
+RUN echo "Verifying musl toolchain installation..." && \
+    which musl-gcc && \
+    which musl-g++ && \
+    musl-gcc --version && \
+    musl-g++ --version && \
+    echo "musl toolchain verification completed successfully"
 
-
-
+# Set working directory
+WORKDIR /workspace
