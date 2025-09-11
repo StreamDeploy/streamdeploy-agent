@@ -1,288 +1,275 @@
-# StreamDeploy Agent
+# StreamDeploy Agent - Go Implementation
 
-The StreamDeploy Agent is an open-source device agent that enables secure, automated deployment and management of containerized applications on edge devices. It provides secure enrollment, health monitoring, and remote management capabilities for IoT and edge computing deployments.
+The Go implementation provides better maintainability, cross-platform compatibility, and modular architecture.
 
-## Features
+## Architecture
 
-- 🔐 **Secure Enrollment** - mTLS-based device authentication and enrollment
-- 📊 **Health Monitoring** - Real-time device metrics and status reporting
-- 🚀 **Container Management** - Automated deployment and lifecycle management
-- 🔄 **Auto-Updates** - Self-updating agent with rollback capabilities
-- 🌐 **Multi-Architecture** - Supports x86_64, ARM64, and ARM32 devices
-- 📱 **Remote Management** - Centralized device management through StreamDeploy platform
+The Go implementation follows a modular architecture with clear separation between:
 
-## Quick Start
+- **Core functionality** (`pkg/core/`) - Core components and interfaces
+- **Full Go implementations** (`pkg/agent/`) - Feature implementations
+- **Command-line tools** (`cmd/`) - Agent and installer executables
 
+### Core Components
 
-### Installation
+Located in `pkg/core/`, these components provide the foundation:
 
-The easiest way to install the StreamDeploy agent is using our one-line installer:
+- **`types/`** - Interface definitions and data structures
+- **`config/`** - Configuration management with file parsing
+- **`utils/`** - Logging and utility functions
+- **`agent/`** - Core agent logic and orchestration
+
+### Full Go Components
+
+Located in `pkg/agent/`, these require the full Go runtime:
+
+- **`https/`** - HTTPS client with mTLS support
+- **`metrics/`** - System metrics collection
+- **`mqtt/`** - MQTT client (planned)
+- **`container/`** - Docker container management (planned)
+- **`package/`** - System package management (planned)
+
+## Building
+
+### Prerequisites
+
+- Go 1.21 or later
+- Docker (for containerized builds)
+
+### Using Make
 
 ```bash
-# Set your bootstrap token (get this from the StreamDeploy dashboard)
-export SD_BOOTSTRAP_TOKEN="your-bootstrap-token-here"
+# Build all binaries
+make build
 
-# Install and enroll the agent
-curl -fsSL https://api.streamdeploy.com/v1-app/enroll/install.sh | sudo sh
+# Build only the agent
+make agent
+
+# Build only the installer
+make installer
+
+
+# Run tests
+make test
+
+# Clean build artifacts
+make clean
 ```
 
-This single command will:
-- Download and install the StreamDeploy agent
-- Configure it with your bootstrap token
-- Automatically enroll the device with your platform
-- Start sending heartbeats with system metrics immediately
+### Manual Build
+
+```bash
+# Build agent
+go build -o bin/streamdeploy-agent ./cmd/agent
+
+# Build installer
+go build -o bin/streamdeploy-installer ./cmd/installer
+
+```
+
+### Docker Build
+
+```bash
+# Using the provided Makefile
+make docker-build
+
+# Or manually
+docker build -t streamdeploy-agent:latest .
+```
+
+## Installation
+
+### Using the Installer
+
+```bash
+# Download and run the installer with a bootstrap token
+sudo ./streamdeploy-installer <bootstrap-token>
+
+# Or set the token as an environment variable
+export SD_BOOTSTRAP_TOKEN="your-bootstrap-token"
+sudo ./streamdeploy-installer
+```
 
 ### Manual Installation
 
-1. **Download the latest release** for your architecture:
-   ```bash
-   # For x86_64
-   wget https://github.com/StreamDeploy/streamdeploy-agent/releases/latest/download/streamdeploy-agent-linux-amd64
-   
-   # For ARM64 (Jetson, Raspberry Pi 4+)
-   wget https://github.com/StreamDeploy/streamdeploy-agent/releases/latest/download/streamdeploy-agent-linux-arm64
-   ```
-
-2. **Install the binary**:
-   ```bash
-   chmod +x streamdeploy-agent-linux-*
-   sudo mv streamdeploy-agent-linux-* /usr/local/bin/streamdeploy-agent
-   ```
-
-3. **Create configuration**:
-   ```bash
-   sudo mkdir -p /etc/streamdeploy
-   echo '{"pki_dir":"/etc/streamdeploy/pki"}' | sudo tee /etc/streamdeploy/agent.json
-   ```
-
-4. **Install systemd service**:
-   ```bash
-   sudo curl -fsSL https://raw.githubusercontent.com/StreamDeploy/streamdeploy-agent/main/systemd/streamdeploy-agent.service \
-     -o /etc/systemd/system/streamdeploy-agent.service
-   sudo systemctl daemon-reload
-   sudo systemctl enable streamdeploy-agent
-   ```
-
-5. **Enroll the device** (requires bootstrap token from StreamDeploy dashboard):
-   ```bash
-   # Get enrollment script and run it
-   curl -fsSL https://api.streamdeploy.com/v1-app/enroll/enroll-device.sh | \
-     sudo bash -s -- --token "your-bootstrap-token"
-   ```
-
-## Supported Platforms
-
-### Hardware Architectures
-- **x86_64** - Intel/AMD 64-bit processors
-- **ARM64** - 64-bit ARM processors (Jetson, Raspberry Pi 4+, Apple Silicon)
-- **ARM32** - 32-bit ARM processors (older Raspberry Pi models)
-
-### Operating Systems
-- **Ubuntu** 18.04+ (recommended)
-- **Debian** 10+ 
-- **Raspberry Pi OS**
-- **NVIDIA Jetson Linux** (L4T)
-- **Other Linux distributions** (manual build required)
-
-### Tested Devices
-- NVIDIA Jetson Orin Nano/NX/AGX
-- NVIDIA Jetson Xavier NX/AGX
-- NVIDIA Jetson Thor
-- Raspberry Pi 4/5
-- Rockchip RK3588 boards
-- Generic x86_64 Linux systems
-
-## Building from Source
-
-### Prerequisites
-- CMake 3.16+
-- C++17 compatible compiler (GCC 7+, Clang 6+)
-- libcurl development headers
-- OpenSSL development headers
-
-### Ubuntu/Debian
 ```bash
-sudo apt-get update
-sudo apt-get install -y build-essential cmake libcurl4-openssl-dev libssl-dev
-```
-
-### Build Steps
-```bash
-git clone https://github.com/StreamDeploy/streamdeploy-agent.git
-cd streamdeploy-agent
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
+# Install binaries
 sudo make install
-```
 
-### Cross-Compilation
-See [docs/cross-compilation.md](docs/cross-compilation.md) for cross-compilation instructions.
+# Create configuration directories
+sudo mkdir -p /etc/streamdeploy/pki
+sudo mkdir -p /var/lib/streamdeploy
+
+# Copy configuration files
+sudo cp config/agent.json /etc/streamdeploy/
+sudo cp config/state.json /etc/streamdeploy/
+```
 
 ## Configuration
 
-The agent uses a JSON configuration file located at `/etc/streamdeploy/agent.json`:
+### Device Configuration (`/etc/streamdeploy/agent.json`)
 
 ```json
 {
+  "device_id": "your-device-id",
+  "enroll_base_url": "https://api.streamdeploy.com",
+  "https_mtls_endpoint": "https://device.streamdeploy.com",
+  "mqtt_ws_mtls_endpoint": "https://mqtt.streamdeploy.com",
   "pki_dir": "/etc/streamdeploy/pki",
-  "api_base": "https://api.streamdeploy.com",
-  "device_base": "https://device.streamdeploy.com",
-  "heartbeat_interval": "30s",
-  "update_check_interval": "5m",
-  "log_level": "info"
+  "os_name": "ubuntu",
+  "os_version": "22.04",
+  "architecture": "x86_64"
 }
 ```
 
-### Secret Management
-
-The agent supports secure secret management through provisioning-time injection from Google Cloud Secret Manager. Secrets can be provided via secure files with automatic fallback to configuration values:
+### State Configuration (`/etc/streamdeploy/state.json`)
 
 ```json
 {
-  "ssh_bastion_host": "34.170.221.16",
-  "ssh_bastion_host_file": "/etc/streamdeploy/secrets/ssh_bastion_host",
-  "bootstrap_token": "",
-  "bootstrap_token_file": "/etc/streamdeploy/secrets/bootstrap_token"
+  "schemaVersion": "1.0",
+  "agent_setting": {
+    "heartbeat_frequency": "15s",
+    "update_frequency": "30s",
+    "mode": "http",
+    "agent_ver": "1"
+  },
+  "containers": [],
+  "packages": [],
+  "custom_metrics": {},
+  "env": {}
 }
 ```
 
-See [Secret Management Documentation](docs/SECRET-MANAGEMENT.md) for detailed setup instructions.
+## Running
 
-### Configuration Options
+### As a Service (Recommended)
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `pki_dir` | `/etc/streamdeploy/pki` | Directory for certificates and keys |
-| `api_base` | `https://api.streamdeploy.com` | StreamDeploy API endpoint |
-| `device_base` | `https://device.streamdeploy.com` | Device API endpoint |
-| `heartbeat_interval` | `30s` | How often to send heartbeat |
-| `update_check_interval` | `5m` | How often to check for updates |
-| `log_level` | `info` | Logging level (debug, info, warn, error) |
-
-## Management Commands
-
-### Service Management
 ```bash
-# Check agent status
-sudo systemctl status streamdeploy-agent
-
-# Start/stop/restart agent
+# Start the service
 sudo systemctl start streamdeploy-agent
-sudo systemctl stop streamdeploy-agent
-sudo systemctl restart streamdeploy-agent
+
+# Enable auto-start
+sudo systemctl enable streamdeploy-agent
+
+# Check status
+sudo systemctl status streamdeploy-agent
 
 # View logs
 sudo journalctl -u streamdeploy-agent -f
 ```
 
-### Agent Information
+### Manual Execution
+
 ```bash
-# Check agent version
-streamdeploy-agent --version
+# Run with default config
+sudo ./streamdeploy-agent
 
-# Test configuration
-streamdeploy-agent --test-config
-
-# Manual enrollment (with token)
-streamdeploy-agent --enroll --token "your-bootstrap-token"
+# Run with custom config
+sudo ./streamdeploy-agent /path/to/config.json
 ```
+
+## Development
+
+### Project Structure
+
+```
+streamdeploy-agent/
+├── cmd/                    # Command-line applications
+│   ├── agent/             # Main agent executable
+│   └── installer/         # Installation tool
+├── pkg/                   # Go packages
+│   ├── core/             # Core components
+│   │   ├── agent/        # Core agent logic
+│   │   ├── config/       # Configuration management
+│   │   ├── types/        # Interface definitions
+│   │   └── utils/        # Utilities and logging
+│   └── agent/            # Full Go implementations
+│       ├── https/        # HTTPS client
+│       ├── metrics/      # Metrics collection
+│       └── ...           # Other components
+├── config/               # Sample configurations
+├── Makefile             # Build automation
+├── go.mod               # Go module definition
+└── README-GO.md         # This file
+```
+
+### Development Environment
+
+The project includes a VS Code devcontainer configuration for Go development:
+
+```bash
+# Open in VS Code with devcontainer
+code .
+# Then: "Reopen in Container"
+```
+
+### Testing
+
+```bash
+# Run all tests
+go test ./...
+
+# Run tests with coverage
+go test -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out
+```
+
+### Adding New Components
+
+1. **Core Components**: Add to `pkg/core/`
+2. **Feature Implementations**: Add to `pkg/agent/`
+3. **Define interfaces** in `pkg/core/types/`
+4. **Update the core agent** to use new components
+
+## Migration from C++
+
+The Go implementation maintains compatibility with the C++ version:
+
+- **Configuration files** are identical
+- **API endpoints** and protocols remain the same
+- **Certificate management** follows the same patterns
+- **System integration** (systemd, etc.) is preserved
+
+### Key Improvements
+
+- **Better error handling** with Go's error system
+- **Improved logging** with structured logging
+- **Enhanced testing** with Go's testing framework
+- **Cross-platform builds** without complex build systems
+- **Memory safety** with Go's garbage collector
+- **Concurrent operations** with goroutines
 
 ## Troubleshooting
 
 ### Common Issues
 
-**Agent won't start**
+1. **Permission denied**: Ensure running as root/sudo
+2. **Config not found**: Check file paths and permissions
+3. **Certificate errors**: Verify PKI directory and certificates
+4. **Network issues**: Check firewall and endpoint connectivity
+
+### Debug Mode
+
 ```bash
-# Check logs for errors
-sudo journalctl -u streamdeploy-agent -n 50
-
-# Verify configuration
-streamdeploy-agent --test-config
-
-# Check file permissions
-ls -la /etc/streamdeploy/
+# Enable verbose logging
+export LOG_LEVEL=debug
+sudo ./streamdeploy-agent
 ```
 
-**Enrollment fails**
-```bash
-# Verify network connectivity
-curl -I https://api.streamdeploy.com/health
+### Log Locations
 
-# Check token validity (tokens expire after 1 hour)
-# Generate a new token from the StreamDeploy dashboard
+- **Systemd service**: `journalctl -u streamdeploy-agent`
+- **Manual execution**: stdout/stderr
+- **Syslog**: `/var/log/syslog` (if configured)
 
-# Verify system time is correct
-timedatectl status
-```
+## Contributing
 
-**Certificate issues**
-```bash
-# Remove old certificates and re-enroll
-sudo rm -rf /etc/streamdeploy/pki
-sudo systemctl restart streamdeploy-agent
-```
-
-### Getting Help
-
-- 📖 **Documentation**: [docs.streamdeploy.com](https://docs.streamdeploy.com)
-- 🐛 **Issues**: [GitHub Issues](https://github.com/StreamDeploy/streamdeploy-agent/issues)
-- 💬 **Community**: [StreamDeploy Community](https://community.streamdeploy.com)
-- 📧 **Support**: support@streamdeploy.com
-
-## Development
-
-### Project Structure
-```
-streamdeploy-agent/
-├── src/                    # Source code
-│   ├── main.cpp           # Entry point
-│   ├── agent.cpp          # Main agent logic
-│   ├── http_client.cpp    # HTTP client implementation
-│   └── hal_*.cpp          # Hardware abstraction layers
-├── config/                # Configuration examples
-├── scripts/               # Build and utility scripts
-├── systemd/               # Systemd service files
-├── third_party/           # Vendored dependencies
-└── docs/                  # Additional documentation
-```
-
-### Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-### Code Style
-- Follow C++17 best practices
-- Use clang-format for formatting
-- Include unit tests for new features
-- Update documentation as needed
-
-## Security
-
-### Reporting Security Issues
-Please report security vulnerabilities to security@streamdeploy.com. Do not create public GitHub issues for security problems.
-
-### Security Features
-- mTLS authentication for all communications
-- Certificate-based device identity
-- Encrypted configuration storage
-- Secure update mechanism with signature verification
+1. Follow Go conventions and best practices
+2. Maintain clean architecture and interfaces
+3. Add tests for new functionality
+4. Update documentation as needed
+5. Ensure cross-platform compatibility
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
-
----
-
-**StreamDeploy Agent** - Secure, scalable edge device management  
-Made with ❤️ by the StreamDeploy team
+This project maintains the same license as the original C++ implementation.

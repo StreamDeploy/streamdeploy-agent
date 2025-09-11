@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "1.0",
+  "agent_setting": {
+    "heartbeat_frequency": "15s",
+    "update_frequency": "30s",
+    "mode": "http",
+    "agent_ver": "1"
+  },
+  "containers": [
+    {
+      "name": "nginx-web",
+      "image": "nginx:alpine",
+      "port": 8080,
+      "health_path": "/",
+      "env": {
+        "NGINX_PORT": "8080"
+      }
+    },
+    {
+      "name": "redis-cache",
+      "image": "redis:alpine",
+      "port": 6379,
+      "health_path": "",
+      "env": {
+        "REDIS_PASSWORD": "mypassword"
+      }
+    }
+  ],
+  "containerLogin": "",
+  "packages": [],

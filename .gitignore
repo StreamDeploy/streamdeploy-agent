@@ -8,8 +8,8 @@ out/
 *.exe
 *.out
 *.app
-streamdeploy-agent
-streamdeploy-installer
+streamdeploy-agent*
+streamdeploy-installer*
 
 # Object files
 *.o
