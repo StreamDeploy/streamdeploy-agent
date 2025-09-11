@@ -132,6 +132,7 @@ func NeedsInstallation(logger types.Logger, configPath string) bool {
 		filepath.Join(pkiDir, "ca.crt"),
 		filepath.Join(pkiDir, "device.crt"),
 		filepath.Join(pkiDir, "device.key"),
+		filepath.Join(pkiDir, "fullchain.crt"),
 	}
 
 	for _, file := range requiredFiles {
@@ -187,6 +188,10 @@ func (i *Installer) Run() error {
 
 	if err := i.enableAndStartService(); err != nil {
 		return fmt.Errorf("failed to enable and start service: %w", err)
+	}
+
+	if err := i.cleanupAndExit(); err != nil {
+		return fmt.Errorf("failed to cleanup and exit: %w", err)
 	}
 
 	return nil
@@ -705,7 +710,7 @@ func (i *Installer) httpPost(url string, payload interface{}) ([]byte, error) {
 }
 
 func (i *Installer) saveCertificates(privateKey, certPEM, certChain, caBundle string) error {
-	i.logger.Info("Saving certificates...")
+	i.logger.Info("Saving certificates for mTLS...")
 
 	// Save private key
 	keyPath := filepath.Join(PKIDir, "device.key")
@@ -713,20 +718,46 @@ func (i *Installer) saveCertificates(privateKey, certPEM, certChain, caBundle st
 		return fmt.Errorf("failed to save private key: %w", err)
 	}
 
-	// Save certificate with chain
+	// Save leaf certificate only (required for proper mTLS)
 	certPath := filepath.Join(PKIDir, "device.crt")
-	fullCert := certPEM + "\n" + certChain
-	if err := os.WriteFile(certPath, []byte(fullCert), 0644); err != nil {
-		return fmt.Errorf("failed to save certificate: %w", err)
+	if err := os.WriteFile(certPath, []byte(certPEM), 0644); err != nil {
+		return fmt.Errorf("failed to save leaf certificate: %w", err)
 	}
 
-	// Save CA bundle
+	// Save intermediate certificates separately (required for mTLS chain validation)
+	if certChain != "" {
+		intermediatePath := filepath.Join(PKIDir, "intermediate.crt")
+		if err := os.WriteFile(intermediatePath, []byte(certChain), 0644); err != nil {
+			return fmt.Errorf("failed to save intermediate certificates: %w", err)
+		}
+		i.logger.Info("Saved intermediate certificate chain")
+	}
+
+	// Save full certificate chain (leaf + intermediates) for applications that need it
+	fullChainPath := filepath.Join(PKIDir, "fullchain.crt")
+	var fullChain strings.Builder
+	fullChain.WriteString(certPEM)
+	if !strings.HasSuffix(certPEM, "\n") {
+		fullChain.WriteString("\n")
+	}
+	if certChain != "" {
+		fullChain.WriteString(certChain)
+		if !strings.HasSuffix(certChain, "\n") {
+			fullChain.WriteString("\n")
+		}
+	}
+	if err := os.WriteFile(fullChainPath, []byte(fullChain.String()), 0644); err != nil {
+		return fmt.Errorf("failed to save full certificate chain: %w", err)
+	}
+
+	// Save CA bundle (root certificates)
 	caPath := filepath.Join(PKIDir, "ca.crt")
 	if err := os.WriteFile(caPath, []byte(caBundle), 0644); err != nil {
 		return fmt.Errorf("failed to save CA bundle: %w", err)
 	}
 
 	i.logger.Infof("Certificates saved to %s", PKIDir)
+	i.logger.Info("Saved files: device.key, device.crt (leaf), intermediate.crt, fullchain.crt, ca.crt")
 	return nil
 }
 
@@ -783,6 +814,67 @@ func (i *Installer) enableAndStartService() error {
 func (i *Installer) runCommand(command string) error {
 	cmd := exec.Command("sh", "-c", command)
 	return cmd.Run()
+}
+
+// cleanupAndExit performs cleanup after successful installation and exits
+func (i *Installer) cleanupAndExit() error {
+	// Get current executable path
+	currentBinary, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to get current executable: %w", err)
+	}
+
+	expectedPath := filepath.Join(InstallDir, "streamdeploy-agent")
+
+	// Only cleanup if we're NOT the installed binary
+	if currentBinary != expectedPath {
+		i.logger.Info("Installation complete. Cleaning up installer...")
+
+		// Verify service is running
+		if err := i.verifyServiceRunning(); err != nil {
+			return fmt.Errorf("service verification failed: %w", err)
+		}
+
+		// Remove installer binary
+		if err := os.Remove(currentBinary); err != nil {
+			i.logger.Errorf("Failed to remove installer binary: %v", err)
+		} else {
+			i.logger.Info("Installer binary removed successfully")
+		}
+
+		i.logger.Info("Installation complete. Exiting installer.")
+		os.Exit(0)
+	}
+
+	return nil
+}
+
+// verifyServiceRunning checks that the systemd service is running properly
+func (i *Installer) verifyServiceRunning() error {
+	if !i.commandExists("systemctl") {
+		i.logger.Info("systemctl not available, skipping service verification")
+		return nil
+	}
+
+	i.logger.Info("Verifying service is running...")
+
+	// Wait a moment for service to start
+	time.Sleep(2 * time.Second)
+
+	// Check service status
+	cmd := exec.Command("systemctl", "is-active", "streamdeploy-agent")
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("service is not active: %w", err)
+	}
+
+	status := strings.TrimSpace(string(output))
+	if status != "active" {
+		return fmt.Errorf("service status is '%s', expected 'active'", status)
+	}
+
+	i.logger.Info("Service is running successfully")
+	return nil
 }
 
 // loadDeviceConfig loads the device configuration from file

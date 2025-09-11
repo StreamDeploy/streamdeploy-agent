@@ -9,7 +9,7 @@ BUILD_DIR := bin
 AGENT_BINARY := streamdeploy-agent
 
 # Build flags
-GO_BUILD_FLAGS := -ldflags="-s -w"
+GO_BUILD_FLAGS := -trimpath -ldflags="-s -w -buildid="
 
 # Default target
 all: build

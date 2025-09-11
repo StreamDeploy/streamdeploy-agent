@@ -18,7 +18,7 @@ systemctl stop streamdeploy-agent 2>/dev/null
 systemctl disable streamdeploy-agent 2>/dev/null
 
 # Remove service file
-rm -f /etc/systemd/system/streamdeploy-agent.service
+sudo rm -f /etc/systemd/system/streamdeploy-agent.service
 
 # Reload systemd
 systemctl daemon-reload

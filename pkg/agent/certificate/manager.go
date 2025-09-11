@@ -188,13 +188,13 @@ func (m *Manager) RenewCertificate(deviceID, enrollEndpoint string) error {
 		return fmt.Errorf("failed to save private key: %w", err)
 	}
 
-	// Save the new certificate
+	// Save the new leaf certificate
 	if err := m.saveCertificate(renewalResponse.CertPEM); err != nil {
-		return fmt.Errorf("failed to save certificate: %w", err)
+		return fmt.Errorf("failed to save leaf certificate: %w", err)
 	}
 
-	// Save the certificate chain
-	if err := m.saveCertificateChain(renewalResponse.Chain); err != nil {
+	// Save the intermediate certificates and full chain
+	if err := m.saveCertificateChain(renewalResponse.CertPEM, renewalResponse.Chain); err != nil {
 		return fmt.Errorf("failed to save certificate chain: %w", err)
 	}
 
@@ -249,26 +249,43 @@ func (m *Manager) saveCertificate(certPEM string) error {
 	return nil
 }
 
-// saveCertificateChain saves the certificate chain to disk
-func (m *Manager) saveCertificateChain(chain []string) error {
-	if len(chain) == 0 {
-		return nil // No chain to save
+// saveCertificateChain saves the intermediate certificates and full chain for mTLS
+func (m *Manager) saveCertificateChain(leafCertPEM string, intermediateChain []string) error {
+	m.logger.Info("Saving certificate chain for mTLS...")
+
+	// Save intermediate certificates separately (required for mTLS chain validation)
+	if len(intermediateChain) > 0 {
+		intermediatePath := filepath.Join(m.pkiDir, "intermediate.crt")
+		var intermediatePEM strings.Builder
+		for _, cert := range intermediateChain {
+			intermediatePEM.WriteString(cert)
+			if !strings.HasSuffix(cert, "\n") {
+				intermediatePEM.WriteString("\n")
+			}
+		}
+		if err := os.WriteFile(intermediatePath, []byte(intermediatePEM.String()), 0644); err != nil {
+			return fmt.Errorf("failed to write intermediate certificates: %w", err)
+		}
+		m.logger.Info("Saved intermediate certificate chain")
 	}
 
-	// Save the chain as ca.pem (assuming the chain contains the CA certificates)
-	caCertPath := m.GetCACertificatePath()
-
-	var chainPEM strings.Builder
-	for _, cert := range chain {
-		chainPEM.WriteString(cert)
+	// Save full certificate chain (leaf + intermediates) for applications that need it
+	fullChainPath := filepath.Join(m.pkiDir, "fullchain.crt")
+	var fullChain strings.Builder
+	fullChain.WriteString(leafCertPEM)
+	if !strings.HasSuffix(leafCertPEM, "\n") {
+		fullChain.WriteString("\n")
+	}
+	for _, cert := range intermediateChain {
+		fullChain.WriteString(cert)
 		if !strings.HasSuffix(cert, "\n") {
-			chainPEM.WriteString("\n")
+			fullChain.WriteString("\n")
 		}
 	}
-
-	if err := os.WriteFile(caCertPath, []byte(chainPEM.String()), 0644); err != nil {
-		return fmt.Errorf("failed to write certificate chain: %w", err)
+	if err := os.WriteFile(fullChainPath, []byte(fullChain.String()), 0644); err != nil {
+		return fmt.Errorf("failed to write full certificate chain: %w", err)
 	}
 
+	m.logger.Info("Saved certificate files: device.crt (leaf), intermediate.crt, fullchain.crt")
 	return nil
 }
