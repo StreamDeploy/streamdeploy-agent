@@ -36,20 +36,19 @@ const (
 
 var RequiredPackages = []string{
 	"curl",
-	"openssl",
 	"ca-certificates",
 	"systemd",
 	"docker.io",
 }
 
 type Installer struct {
-	logger           types.Logger
-	bootstrapToken   string
-	deviceID         string
-	osName           string
-	osVersion        string
-	architecture     string
-	packageManager   PackageManager
+	logger         types.Logger
+	bootstrapToken string
+	deviceID       string
+	osName         string
+	osVersion      string
+	architecture   string
+	packageManager PackageManager
 }
 
 type PackageManager struct {
@@ -61,25 +60,25 @@ type PackageManager struct {
 }
 
 type DeviceConfig struct {
-	DeviceID            string         `json:"device_id"`
-	EnrollBaseURL       string         `json:"enroll_base_url"`
-	HTTPSMTLSEndpoint   string         `json:"https_mtls_endpoint"`
-	MQTTWSMTLSEndpoint  string         `json:"mqtt_ws_mtls_endpoint"`
-	PKIDir              string         `json:"pki_dir"`
-	OSName              string         `json:"os_name"`
-	OSVersion           string         `json:"os_version"`
-	Architecture        string         `json:"architecture"`
-	PackageManager      PackageManager `json:"package_manager"`
+	DeviceID           string         `json:"device_id"`
+	EnrollBaseURL      string         `json:"enroll_base_url"`
+	HTTPSMTLSEndpoint  string         `json:"https_mtls_endpoint"`
+	MQTTWSMTLSEndpoint string         `json:"mqtt_ws_mtls_endpoint"`
+	PKIDir             string         `json:"pki_dir"`
+	OSName             string         `json:"os_name"`
+	OSVersion          string         `json:"os_version"`
+	Architecture       string         `json:"architecture"`
+	PackageManager     PackageManager `json:"package_manager"`
 }
 
 type StateConfig struct {
 	SchemaVersion  string                 `json:"schemaVersion"`
-	AgentSetting   AgentSetting          `json:"agent_setting"`
-	Containers     []interface{}         `json:"containers"`
-	ContainerLogin string                `json:"containerLogin"`
-	Env            map[string]string     `json:"env"`
-	Packages       []string              `json:"packages"`
-	CustomMetrics  map[string]string     `json:"custom_metrics"`
+	AgentSetting   AgentSetting           `json:"agent_setting"`
+	Containers     []interface{}          `json:"containers"`
+	ContainerLogin string                 `json:"containerLogin"`
+	Env            map[string]string      `json:"env"`
+	Packages       []string               `json:"packages"`
+	CustomMetrics  map[string]string      `json:"custom_metrics"`
 	CustomPackages map[string]interface{} `json:"custom_packages"`
 }
 
@@ -102,7 +101,7 @@ type EnrollCSRResponse struct {
 
 func main() {
 	logger := utils.NewLogger("INSTALLER")
-	
+
 	installer := &Installer{
 		logger: logger,
 	}
@@ -193,7 +192,7 @@ func (i *Installer) extractDeviceIDFromJWT() error {
 	}
 
 	payload := parts[1]
-	
+
 	// Add padding if needed for base64 decoding
 	for len(payload)%4 != 0 {
 		payload += "="
@@ -224,15 +223,21 @@ func (i *Installer) extractDeviceIDFromJWT() error {
 func (i *Installer) detectSystem() error {
 	i.logger.Info("Detecting system information...")
 
-	// Detect architecture
-	i.architecture = runtime.GOARCH
-	switch i.architecture {
+	// Detect architecture and map to StreamDeploy naming convention
+	goArch := runtime.GOARCH
+	switch goArch {
 	case "amd64":
-		i.architecture = "x86_64"
+		i.architecture = "amd64"
 	case "arm64":
-		i.architecture = "aarch64"
+		i.architecture = "arm64"
 	case "arm":
-		i.architecture = "arm"
+		// For ARM, we need to detect the specific variant
+		// Default to armv7, but could be enhanced to detect armv6/armv7 specifically
+		i.architecture = i.detectARMVariant()
+	case "riscv64":
+		i.architecture = "riscv64"
+	default:
+		return fmt.Errorf("unsupported architecture: %s", goArch)
 	}
 
 	// Detect OS from /etc/os-release
@@ -252,6 +257,28 @@ func (i *Installer) detectSystem() error {
 	i.logger.Infof("Package Manager: %s", i.packageManager.Type)
 
 	return nil
+}
+func (i *Installer) detectARMVariant() string {
+	// Try to detect ARM variant by checking /proc/cpuinfo
+	if cpuInfo, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+		cpuInfoStr := string(cpuInfo)
+
+		// Look for ARM architecture version
+		if strings.Contains(cpuInfoStr, "ARMv6") {
+			return "armv6"
+		}
+		if strings.Contains(cpuInfoStr, "ARMv7") {
+			return "armv7"
+		}
+
+		// Check for specific CPU features that indicate ARMv7
+		if strings.Contains(cpuInfoStr, "vfpv3") || strings.Contains(cpuInfoStr, "neon") {
+			return "armv7"
+		}
+	}
+
+	// Default to armv7 if we can't determine the specific variant
+	return "armv7"
 }
 
 func (i *Installer) parseOSRelease() (map[string]string, error) {
@@ -356,12 +383,62 @@ func (i *Installer) runCommand(command string) error {
 }
 
 func (i *Installer) downloadOrBuildAgent() error {
-	i.logger.Info("Installing StreamDeploy agent binary...")
-	
-	// For now, we'll assume the binary is built and available
-	// In a real implementation, you would download or build the binary here
-	i.logger.Info("Agent binary installation placeholder - binary should be available")
-	
+	i.logger.Info("Downloading StreamDeploy agent binary...")
+
+	// Validate that we have a supported architecture
+	supportedArchs := []string{"amd64", "arm64", "armv6", "armv7", "riscv64"}
+	archSupported := false
+	for _, arch := range supportedArchs {
+		if i.architecture == arch {
+			archSupported = true
+			break
+		}
+	}
+
+	if !archSupported {
+		return fmt.Errorf("unsupported architecture: %s. Supported architectures: %v", i.architecture, supportedArchs)
+	}
+
+	// Construct download URL using the specified naming convention
+	downloadURL := fmt.Sprintf("https://get.streamdeploy.com/agent/streamdeploy-agent-linux-%s", i.architecture)
+	i.logger.Infof("Downloading from: %s", downloadURL)
+
+	// Download the binary
+	resp, err := http.Get(downloadURL)
+	if err != nil {
+		return fmt.Errorf("failed to download agent binary: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to download agent binary: HTTP %d", resp.StatusCode)
+	}
+
+	// Create install directory if it doesn't exist
+	if err := os.MkdirAll(InstallDir, 0755); err != nil {
+		return fmt.Errorf("failed to create install directory: %w", err)
+	}
+
+	// Create the binary file
+	binaryPath := filepath.Join(InstallDir, "streamdeploy-agent")
+	file, err := os.Create(binaryPath)
+	if err != nil {
+		return fmt.Errorf("failed to create binary file: %w", err)
+	}
+	defer file.Close()
+
+	// Copy the downloaded content to the file
+	_, err = io.Copy(file, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to write binary file: %w", err)
+	}
+
+	// Make the binary executable
+	if err := os.Chmod(binaryPath, 0755); err != nil {
+		return fmt.Errorf("failed to make binary executable: %w", err)
+	}
+
+	i.logger.Infof("Agent binary installed successfully to: %s", binaryPath)
 	return nil
 }
 
@@ -378,15 +455,15 @@ func (i *Installer) createConfig() error {
 
 	// Create device config
 	deviceConfig := DeviceConfig{
-		DeviceID:            i.deviceID,
-		EnrollBaseURL:       APIBase,
-		HTTPSMTLSEndpoint:   HTTPSEndpoint,
-		MQTTWSMTLSEndpoint:  MQTTEndpoint,
-		PKIDir:              PKIDir,
-		OSName:              i.osName,
-		OSVersion:           i.osVersion,
-		Architecture:        i.architecture,
-		PackageManager:      i.packageManager,
+		DeviceID:           i.deviceID,
+		EnrollBaseURL:      APIBase,
+		HTTPSMTLSEndpoint:  HTTPSEndpoint,
+		MQTTWSMTLSEndpoint: MQTTEndpoint,
+		PKIDir:             PKIDir,
+		OSName:             i.osName,
+		OSVersion:          i.osVersion,
+		Architecture:       i.architecture,
+		PackageManager:     i.packageManager,
 	}
 
 	deviceConfigPath := filepath.Join(ConfigDir, "agent.json")
