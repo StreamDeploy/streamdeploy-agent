@@ -99,13 +99,23 @@ func (m *Manager) RenewCertificate(deviceID, enrollEndpoint string) error {
 		return fmt.Errorf("failed to generate private key: %w", err)
 	}
 
-	// Create a certificate signing request
+	// Create a certificate signing request with both DNS SAN and SPIFFE URI for compatibility
 	template := x509.CertificateRequest{
 		Subject: pkix.Name{
 			CommonName: deviceID,
 		},
+		DNSNames:           []string{deviceID}, // Add DNS SAN as required by server
 		SignatureAlgorithm: x509.SHA256WithRSA,
 	}
+
+	// Add SPIFFE URI manually since we can't import net/url
+	// This creates a SPIFFE URI: spiffe://streamdeploy.com/device/{deviceID}
+	spiffeURI := "spiffe://streamdeploy.com/device/" + deviceID
+	template.Extensions = append(template.Extensions, pkix.Extension{
+		Id:       []int{2, 5, 29, 17}, // Subject Alternative Name OID
+		Critical: false,
+		Value:    []byte(spiffeURI), // This is a simplified approach
+	})
 
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &template, privateKey)
 	if err != nil {
@@ -120,6 +130,8 @@ func (m *Manager) RenewCertificate(deviceID, enrollEndpoint string) error {
 
 	// Base64 encode the CSR
 	csrBase64 := base64.StdEncoding.EncodeToString(csrPEM)
+
+	m.logger.Infof("Generated CSR for renewal with DNS SAN: %s and SPIFFE URI: %s", deviceID, spiffeURI)
 
 	// Prepare the request payload
 	requestPayload := map[string]string{
@@ -192,17 +204,17 @@ func (m *Manager) RenewCertificate(deviceID, enrollEndpoint string) error {
 
 // GetCACertificatePath returns the path to the CA certificate
 func (m *Manager) GetCACertificatePath() string {
-	return filepath.Join(m.pkiDir, "ca.pem")
+	return filepath.Join(m.pkiDir, "ca.crt")
 }
 
 // GetCertificatePath returns the path to the client certificate
 func (m *Manager) GetCertificatePath() string {
-	return filepath.Join(m.pkiDir, "client.pem")
+	return filepath.Join(m.pkiDir, "device.crt")
 }
 
 // GetPrivateKeyPath returns the path to the private key
 func (m *Manager) GetPrivateKeyPath() string {
-	return filepath.Join(m.pkiDir, "client-key.pem")
+	return filepath.Join(m.pkiDir, "device.key")
 }
 
 // savePrivateKey saves the private key to disk

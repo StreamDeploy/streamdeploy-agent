@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/types"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/utils"
@@ -354,32 +355,201 @@ func (i *Installer) commandExists(command string) bool {
 }
 
 func (i *Installer) installDependencies() error {
-	i.logger.Info("Installing system dependencies...")
+	i.logger.Info("=== Installing System Dependencies ===")
 
 	if i.packageManager.Type == "unknown" {
 		i.logger.Info("Unknown package manager, skipping dependency installation")
 		return nil
 	}
 
-	// Update package list
-	if err := i.runCommand(i.packageManager.UpdateCmd); err != nil {
-		i.logger.Errorf("Failed to update package list: %v", err)
+	i.logger.Infof("Using package manager: %s", i.packageManager.Type)
+
+	// Step 1: Check which packages are already installed
+	i.logger.Info("Step 1: Checking existing packages...")
+	installedPackages, err := i.checkInstalledPackages()
+	if err != nil {
+		i.logger.Errorf("Failed to check installed packages: %v", err)
+		installedPackages = make(map[string]bool)
 	}
 
-	// Install required packages
+	// Step 2: Update package list
+	i.logger.Info("Step 2: Updating package list...")
+	if err := i.runCommandWithLog(i.packageManager.UpdateCmd, "Updating package list"); err != nil {
+		i.logger.Errorf("Failed to update package list: %v", err)
+		// Continue with installation even if update fails
+	}
+
+	// Step 3: Install missing packages
+	i.logger.Info("Step 3: Installing missing packages...")
+	packagesToInstall := []string{}
+	packagesAlreadyInstalled := []string{}
+
 	for _, pkg := range RequiredPackages {
-		cmd := fmt.Sprintf("%s %s", i.packageManager.InstallCmd, pkg)
-		if err := i.runCommand(cmd); err != nil {
-			i.logger.Errorf("Failed to install %s: %v", pkg, err)
+		if installedPackages[pkg] {
+			packagesAlreadyInstalled = append(packagesAlreadyInstalled, pkg)
+			i.logger.Infof("✓ Package %s is already installed", pkg)
+		} else {
+			packagesToInstall = append(packagesToInstall, pkg)
 		}
 	}
 
+	if len(packagesAlreadyInstalled) > 0 {
+		i.logger.Infof("Found %d already installed packages: %v", len(packagesAlreadyInstalled), packagesAlreadyInstalled)
+	}
+
+	if len(packagesToInstall) > 0 {
+		i.logger.Infof("Installing %d missing packages: %v", len(packagesToInstall), packagesToInstall)
+
+		for _, pkg := range packagesToInstall {
+			cmd := fmt.Sprintf("%s %s", i.packageManager.InstallCmd, pkg)
+			if err := i.runCommandWithLog(cmd, fmt.Sprintf("Installing %s", pkg)); err != nil {
+				i.logger.Errorf("Failed to install %s: %v", pkg, err)
+				return fmt.Errorf("failed to install package %s: %w", pkg, err)
+			}
+			i.logger.Infof("✓ Successfully installed %s", pkg)
+		}
+	} else {
+		i.logger.Info("✓ All required packages are already installed")
+	}
+
+	// Step 4: Verify installations
+	i.logger.Info("Step 4: Verifying package installations...")
+	if err := i.verifyPackageInstallations(); err != nil {
+		i.logger.Errorf("Package verification failed: %v", err)
+		// Don't fail the installation for verification issues
+	}
+
+	i.logger.Info("=== Dependency Installation Complete ===")
 	return nil
 }
 
 func (i *Installer) runCommand(command string) error {
 	cmd := exec.Command("sh", "-c", command)
 	return cmd.Run()
+}
+
+func (i *Installer) runCommandWithLog(command string, description string) error {
+	i.logger.Infof("Running: %s", description)
+	cmd := exec.Command("sh", "-c", command)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		i.logger.Errorf("Command failed: %s", string(output))
+		return err
+	}
+	if len(output) > 0 {
+		i.logger.Infof("Command output: %s", string(output))
+	}
+	return nil
+}
+
+func (i *Installer) checkInstalledPackages() (map[string]bool, error) {
+	installedPackages := make(map[string]bool)
+
+	// Run the check command to get list of installed packages
+	cmd := exec.Command("sh", "-c", i.packageManager.CheckCmd)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to check installed packages: %w", err)
+	}
+
+	installedList := string(output)
+
+	// Check each required package
+	for _, pkg := range RequiredPackages {
+		installed := i.isPackageInstalled(pkg, installedList)
+		installedPackages[pkg] = installed
+		if installed {
+			i.logger.Infof("Package %s is installed", pkg)
+		} else {
+			i.logger.Infof("Package %s is not installed", pkg)
+		}
+	}
+
+	return installedPackages, nil
+}
+
+func (i *Installer) isPackageInstalled(packageName, installedList string) bool {
+	// Different package managers have different output formats
+	switch i.packageManager.Type {
+	case "apt":
+		// For apt, check if package name appears in dpkg -l output
+		// Format: ii  package-name  version  architecture  description
+		lines := strings.Split(installedList, "\n")
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[0] == "ii" && fields[1] == packageName {
+				return true
+			}
+		}
+	case "yum":
+		// For yum, check if package name appears in rpm -qa output
+		lines := strings.Split(installedList, "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, packageName+"-") {
+				return true
+			}
+		}
+	case "apk":
+		// For apk, check if package name appears in apk list output
+		lines := strings.Split(installedList, "\n")
+		for _, line := range lines {
+			if strings.Contains(line, packageName) && strings.Contains(line, "[installed]") {
+				return true
+			}
+		}
+	case "pacman":
+		// For pacman, check if package name appears in pacman -Q output
+		lines := strings.Split(installedList, "\n")
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			if len(fields) >= 1 && fields[0] == packageName {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (i *Installer) verifyPackageInstallations() error {
+	i.logger.Info("Verifying that installed packages are working correctly...")
+
+	verificationTests := map[string]func() error{
+		"curl": func() error {
+			cmd := exec.Command("curl", "--version")
+			return cmd.Run()
+		},
+		"ca-certificates": func() error {
+			// Check if ca-certificates directory exists
+			_, err := os.Stat("/etc/ssl/certs")
+			return err
+		},
+		"systemd": func() error {
+			cmd := exec.Command("systemctl", "--version")
+			return cmd.Run()
+		},
+		"docker.io": func() error {
+			cmd := exec.Command("docker", "--version")
+			return cmd.Run()
+		},
+	}
+
+	allVerified := true
+	for pkg, testFunc := range verificationTests {
+		if err := testFunc(); err != nil {
+			i.logger.Errorf("Verification failed for %s: %v", pkg, err)
+			allVerified = false
+		} else {
+			i.logger.Infof("✓ %s verification passed", pkg)
+		}
+	}
+
+	if !allVerified {
+		return fmt.Errorf("some package verifications failed")
+	}
+
+	i.logger.Info("✓ All package verifications passed")
+	return nil
 }
 
 func (i *Installer) downloadOrBuildAgent() error {
@@ -566,18 +736,20 @@ func (i *Installer) generateKeyAndCSR() (string, string, error) {
 		return "", "", fmt.Errorf("failed to generate private key: %w", err)
 	}
 
-	// Create CSR template
+	// Create CSR template with both SPIFFE URI and DNS SAN for compatibility
 	template := x509.CertificateRequest{
 		Subject: pkix.Name{
 			CommonName: i.deviceID,
 		},
+		DNSNames: []string{i.deviceID}, // Add DNS SAN as required by server
 		URIs: []*url.URL{
 			{
 				Scheme: "spiffe",
-				Host:   "streamdeploy",
+				Host:   "streamdeploy.com", // Use proper domain
 				Path:   "/device/" + i.deviceID,
 			},
 		},
+		SignatureAlgorithm: x509.SHA256WithRSA,
 	}
 
 	// Create CSR
@@ -601,6 +773,7 @@ func (i *Installer) generateKeyAndCSR() (string, string, error) {
 	csrStr := string(pem.EncodeToMemory(csrPEM))
 
 	i.logger.Info("Generated key and CSR successfully")
+	i.logger.Infof("CSR includes DNS SAN: %s and SPIFFE URI: spiffe://streamdeploy.com/device/%s", i.deviceID, i.deviceID)
 	return privateKeyStr, csrStr, nil
 }
 
@@ -615,9 +788,15 @@ func (i *Installer) enrollCSR(nonce, csr string) (string, string, error) {
 		"csr_base64": csrBase64,
 	}
 
+	i.logger.Infof("Sending CSR enrollment request to: %s", APIBase+"/v1-app/enroll/csr")
+	i.logger.Infof("CSR length: %d bytes", len(csr))
+	i.logger.Infof("Base64 CSR length: %d bytes", len(csrBase64))
+	i.logger.Infof("Token length: %d bytes", len(i.bootstrapToken))
+	i.logger.Infof("Nonce length: %d bytes", len(nonce))
+
 	resp, err := i.httpPost(APIBase+"/v1-app/enroll/csr", payload)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("CSR enrollment request failed: %w", err)
 	}
 
 	var response EnrollCSRResponse
@@ -628,7 +807,9 @@ func (i *Installer) enrollCSR(nonce, csr string) (string, string, error) {
 	// Build certificate chain
 	certChain := strings.Join(response.Chain, "\n")
 
-	i.logger.Info("Received signed certificate")
+	i.logger.Info("Received signed certificate successfully")
+	i.logger.Infof("Certificate PEM length: %d bytes", len(response.CertPEM))
+	i.logger.Infof("Certificate chain parts: %d", len(response.Chain))
 	return response.CertPEM, certChain, nil
 }
 
@@ -638,17 +819,34 @@ func (i *Installer) httpPost(url string, payload interface{}) ([]byte, error) {
 		return nil, fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Add required headers
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "StreamDeploy-Installer/1.0")
+	req.Header.Set("x-device-id", i.deviceID)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("request failed with status: %d", resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	return io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		i.logger.Errorf("HTTP request failed - URL: %s, Status: %d, Body: %s", url, resp.StatusCode, string(body))
+		return nil, fmt.Errorf("request failed with status: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	return body, nil
 }
 
 func (i *Installer) saveCertificates(privateKey, certPEM, certChain, caBundle string) error {
