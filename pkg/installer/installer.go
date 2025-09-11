@@ -1,4 +1,4 @@
-package main
+package installer
 
 import (
 	"bufio"
@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/types"
-	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/utils"
 )
 
 const (
@@ -40,16 +39,6 @@ var RequiredPackages = []string{
 	"ca-certificates",
 	"systemd",
 	"docker.io",
-}
-
-type Installer struct {
-	logger         types.Logger
-	bootstrapToken string
-	deviceID       string
-	osName         string
-	osVersion      string
-	architecture   string
-	packageManager PackageManager
 }
 
 type PackageManager struct {
@@ -100,23 +89,63 @@ type EnrollCSRResponse struct {
 	Chain   []string `json:"chain"`
 }
 
-func main() {
-	logger := utils.NewLogger("INSTALLER")
-
-	installer := &Installer{
-		logger: logger,
-	}
-
-	if err := installer.Run(); err != nil {
-		logger.Errorf("Installation failed: %v", err)
-		os.Exit(1)
-	}
-
-	logger.Info("StreamDeploy agent installation completed successfully!")
-	logger.Info("Check status with: systemctl status streamdeploy-agent")
-	logger.Info("View logs with: journalctl -u streamdeploy-agent -f")
+// Installer implements the installation logic
+type Installer struct {
+	logger         types.Logger
+	bootstrapToken string
+	deviceID       string
+	osName         string
+	osVersion      string
+	architecture   string
+	packageManager PackageManager
 }
 
+// New creates a new installer instance
+func New(logger types.Logger) *Installer {
+	return &Installer{
+		logger: logger,
+	}
+}
+
+// NeedsInstallation checks if the agent needs to run the installer flow
+func NeedsInstallation(logger types.Logger, configPath string) bool {
+	// Check if config file exists
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		logger.Info("Config file not found, installation needed")
+		return true
+	}
+
+	// Load config to get PKI directory
+	deviceConfig, err := loadDeviceConfig(configPath)
+	if err != nil {
+		logger.Infof("Failed to load config, installation needed: %v", err)
+		return true
+	}
+
+	// Check if certificates exist
+	pkiDir := deviceConfig.PKIDir
+	if pkiDir == "" {
+		pkiDir = PKIDir
+	}
+
+	requiredFiles := []string{
+		filepath.Join(pkiDir, "ca.crt"),
+		filepath.Join(pkiDir, "device.crt"),
+		filepath.Join(pkiDir, "device.key"),
+	}
+
+	for _, file := range requiredFiles {
+		if _, err := os.Stat(file); os.IsNotExist(err) {
+			logger.Infof("Certificate file missing: %s, installation needed", file)
+			return true
+		}
+	}
+
+	logger.Info("All certificates found, proceeding with agent startup")
+	return false
+}
+
+// Run executes the complete installer flow
 func (i *Installer) Run() error {
 	i.logger.Info("StreamDeploy Agent Installer Starting...")
 
@@ -125,7 +154,7 @@ func (i *Installer) Run() error {
 	}
 
 	if !i.getBootstrapToken() {
-		return fmt.Errorf("bootstrap token is required. Usage: sudo ./streamdeploy-installer <token> or export SD_BOOTSTRAP_TOKEN=\"your-token\"")
+		return fmt.Errorf("bootstrap token is required. Usage: sudo ./streamdeploy-agent <token> or export SD_BOOTSTRAP_TOKEN=\"your-token\"")
 	}
 
 	if err := i.extractDeviceIDFromJWT(); err != nil {
@@ -140,8 +169,8 @@ func (i *Installer) Run() error {
 		return fmt.Errorf("failed to install system dependencies: %w", err)
 	}
 
-	if err := i.downloadOrBuildAgent(); err != nil {
-		return fmt.Errorf("failed to install StreamDeploy agent binary: %w", err)
+	if err := i.ensureAgentBinary(); err != nil {
+		return fmt.Errorf("failed to ensure agent binary: %w", err)
 	}
 
 	if err := i.createConfig(); err != nil {
@@ -156,8 +185,8 @@ func (i *Installer) Run() error {
 		return fmt.Errorf("failed to create systemd service: %w", err)
 	}
 
-	if err := i.startService(); err != nil {
-		return fmt.Errorf("failed to start service: %w", err)
+	if err := i.enableAndStartService(); err != nil {
+		return fmt.Errorf("failed to enable and start service: %w", err)
 	}
 
 	return nil
@@ -168,8 +197,8 @@ func (i *Installer) checkRoot() bool {
 }
 
 func (i *Installer) getBootstrapToken() bool {
-	// Check command line argument
-	if len(os.Args) >= 2 && len(os.Args[1]) > 0 {
+	// Check command line argument (skip first arg which is the binary name)
+	if len(os.Args) >= 2 && len(os.Args[1]) > 0 && !strings.HasPrefix(os.Args[1], "/") {
 		i.bootstrapToken = os.Args[1]
 		i.logger.Info("Bootstrap token provided via command line")
 		return true
@@ -232,8 +261,6 @@ func (i *Installer) detectSystem() error {
 	case "arm64":
 		i.architecture = "arm64"
 	case "arm":
-		// For ARM, we need to detect the specific variant
-		// Default to armv7, but could be enhanced to detect armv6/armv7 specifically
 		i.architecture = i.detectARMVariant()
 	case "riscv64":
 		i.architecture = "riscv64"
@@ -259,6 +286,7 @@ func (i *Installer) detectSystem() error {
 
 	return nil
 }
+
 func (i *Installer) detectARMVariant() string {
 	// Try to detect ARM variant by checking /proc/cpuinfo
 	if cpuInfo, err := os.ReadFile("/proc/cpuinfo"); err == nil {
@@ -364,68 +392,25 @@ func (i *Installer) installDependencies() error {
 
 	i.logger.Infof("Using package manager: %s", i.packageManager.Type)
 
-	// Step 1: Check which packages are already installed
-	i.logger.Info("Step 1: Checking existing packages...")
-	installedPackages, err := i.checkInstalledPackages()
-	if err != nil {
-		i.logger.Errorf("Failed to check installed packages: %v", err)
-		installedPackages = make(map[string]bool)
-	}
-
-	// Step 2: Update package list
-	i.logger.Info("Step 2: Updating package list...")
+	// Update package list
+	i.logger.Info("Updating package list...")
 	if err := i.runCommandWithLog(i.packageManager.UpdateCmd, "Updating package list"); err != nil {
 		i.logger.Errorf("Failed to update package list: %v", err)
-		// Continue with installation even if update fails
 	}
 
-	// Step 3: Install missing packages
-	i.logger.Info("Step 3: Installing missing packages...")
-	packagesToInstall := []string{}
-	packagesAlreadyInstalled := []string{}
-
+	// Install packages
 	for _, pkg := range RequiredPackages {
-		if installedPackages[pkg] {
-			packagesAlreadyInstalled = append(packagesAlreadyInstalled, pkg)
-			i.logger.Infof("✓ Package %s is already installed", pkg)
+		cmd := fmt.Sprintf("%s %s", i.packageManager.InstallCmd, pkg)
+		if err := i.runCommandWithLog(cmd, fmt.Sprintf("Installing %s", pkg)); err != nil {
+			i.logger.Errorf("Failed to install %s: %v", pkg, err)
+			// Continue with other packages
 		} else {
-			packagesToInstall = append(packagesToInstall, pkg)
-		}
-	}
-
-	if len(packagesAlreadyInstalled) > 0 {
-		i.logger.Infof("Found %d already installed packages: %v", len(packagesAlreadyInstalled), packagesAlreadyInstalled)
-	}
-
-	if len(packagesToInstall) > 0 {
-		i.logger.Infof("Installing %d missing packages: %v", len(packagesToInstall), packagesToInstall)
-
-		for _, pkg := range packagesToInstall {
-			cmd := fmt.Sprintf("%s %s", i.packageManager.InstallCmd, pkg)
-			if err := i.runCommandWithLog(cmd, fmt.Sprintf("Installing %s", pkg)); err != nil {
-				i.logger.Errorf("Failed to install %s: %v", pkg, err)
-				return fmt.Errorf("failed to install package %s: %w", pkg, err)
-			}
 			i.logger.Infof("✓ Successfully installed %s", pkg)
 		}
-	} else {
-		i.logger.Info("✓ All required packages are already installed")
-	}
-
-	// Step 4: Verify installations
-	i.logger.Info("Step 4: Verifying package installations...")
-	if err := i.verifyPackageInstallations(); err != nil {
-		i.logger.Errorf("Package verification failed: %v", err)
-		// Don't fail the installation for verification issues
 	}
 
 	i.logger.Info("=== Dependency Installation Complete ===")
 	return nil
-}
-
-func (i *Installer) runCommand(command string) error {
-	cmd := exec.Command("sh", "-c", command)
-	return cmd.Run()
 }
 
 func (i *Installer) runCommandWithLog(command string, description string) error {
@@ -442,173 +427,51 @@ func (i *Installer) runCommandWithLog(command string, description string) error 
 	return nil
 }
 
-func (i *Installer) checkInstalledPackages() (map[string]bool, error) {
-	installedPackages := make(map[string]bool)
-
-	// Run the check command to get list of installed packages
-	cmd := exec.Command("sh", "-c", i.packageManager.CheckCmd)
-	output, err := cmd.Output()
+func (i *Installer) ensureAgentBinary() error {
+	// Check if we're already running as the installed binary
+	currentBinary, err := os.Executable()
 	if err != nil {
-		return nil, fmt.Errorf("failed to check installed packages: %w", err)
+		return fmt.Errorf("failed to get current executable path: %w", err)
 	}
 
-	installedList := string(output)
+	expectedPath := filepath.Join(InstallDir, "streamdeploy-agent")
 
-	// Check each required package
-	for _, pkg := range RequiredPackages {
-		installed := i.isPackageInstalled(pkg, installedList)
-		installedPackages[pkg] = installed
-		if installed {
-			i.logger.Infof("Package %s is installed", pkg)
-		} else {
-			i.logger.Infof("Package %s is not installed", pkg)
-		}
+	// If we're already running from the install directory, no need to copy
+	if currentBinary == expectedPath {
+		i.logger.Info("Already running from install directory")
+		return nil
 	}
 
-	return installedPackages, nil
-}
-
-func (i *Installer) isPackageInstalled(packageName, installedList string) bool {
-	// Different package managers have different output formats
-	switch i.packageManager.Type {
-	case "apt":
-		// For apt, check if package name appears in dpkg -l output
-		// Format: ii  package-name  version  architecture  description
-		lines := strings.Split(installedList, "\n")
-		for _, line := range lines {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 && fields[0] == "ii" && fields[1] == packageName {
-				return true
-			}
-		}
-	case "yum":
-		// For yum, check if package name appears in rpm -qa output
-		lines := strings.Split(installedList, "\n")
-		for _, line := range lines {
-			if strings.HasPrefix(line, packageName+"-") {
-				return true
-			}
-		}
-	case "apk":
-		// For apk, check if package name appears in apk list output
-		lines := strings.Split(installedList, "\n")
-		for _, line := range lines {
-			if strings.Contains(line, packageName) && strings.Contains(line, "[installed]") {
-				return true
-			}
-		}
-	case "pacman":
-		// For pacman, check if package name appears in pacman -Q output
-		lines := strings.Split(installedList, "\n")
-		for _, line := range lines {
-			fields := strings.Fields(line)
-			if len(fields) >= 1 && fields[0] == packageName {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
-func (i *Installer) verifyPackageInstallations() error {
-	i.logger.Info("Verifying that installed packages are working correctly...")
-
-	verificationTests := map[string]func() error{
-		"curl": func() error {
-			cmd := exec.Command("curl", "--version")
-			return cmd.Run()
-		},
-		"ca-certificates": func() error {
-			// Check if ca-certificates directory exists
-			_, err := os.Stat("/etc/ssl/certs")
-			return err
-		},
-		"systemd": func() error {
-			cmd := exec.Command("systemctl", "--version")
-			return cmd.Run()
-		},
-		"docker.io": func() error {
-			cmd := exec.Command("docker", "--version")
-			return cmd.Run()
-		},
-	}
-
-	allVerified := true
-	for pkg, testFunc := range verificationTests {
-		if err := testFunc(); err != nil {
-			i.logger.Errorf("Verification failed for %s: %v", pkg, err)
-			allVerified = false
-		} else {
-			i.logger.Infof("✓ %s verification passed", pkg)
-		}
-	}
-
-	if !allVerified {
-		return fmt.Errorf("some package verifications failed")
-	}
-
-	i.logger.Info("✓ All package verifications passed")
-	return nil
-}
-
-func (i *Installer) downloadOrBuildAgent() error {
-	i.logger.Info("Downloading StreamDeploy agent binary...")
-
-	// Validate that we have a supported architecture
-	supportedArchs := []string{"amd64", "arm64", "armv6", "armv7", "riscv64"}
-	archSupported := false
-	for _, arch := range supportedArchs {
-		if i.architecture == arch {
-			archSupported = true
-			break
-		}
-	}
-
-	if !archSupported {
-		return fmt.Errorf("unsupported architecture: %s. Supported architectures: %v", i.architecture, supportedArchs)
-	}
-
-	// Construct download URL using the specified naming convention
-	downloadURL := fmt.Sprintf("https://get.streamdeploy.com/agent/streamdeploy-agent-linux-%s", i.architecture)
-	i.logger.Infof("Downloading from: %s", downloadURL)
-
-	// Download the binary
-	resp, err := http.Get(downloadURL)
-	if err != nil {
-		return fmt.Errorf("failed to download agent binary: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to download agent binary: HTTP %d", resp.StatusCode)
-	}
+	i.logger.Info("Copying agent binary to install directory...")
 
 	// Create install directory if it doesn't exist
 	if err := os.MkdirAll(InstallDir, 0755); err != nil {
 		return fmt.Errorf("failed to create install directory: %w", err)
 	}
 
-	// Create the binary file
-	binaryPath := filepath.Join(InstallDir, "streamdeploy-agent")
-	file, err := os.Create(binaryPath)
+	// Copy current binary to install location
+	sourceFile, err := os.Open(currentBinary)
 	if err != nil {
-		return fmt.Errorf("failed to create binary file: %w", err)
+		return fmt.Errorf("failed to open source binary: %w", err)
 	}
-	defer file.Close()
+	defer sourceFile.Close()
 
-	// Copy the downloaded content to the file
-	_, err = io.Copy(file, resp.Body)
+	destFile, err := os.Create(expectedPath)
 	if err != nil {
-		return fmt.Errorf("failed to write binary file: %w", err)
+		return fmt.Errorf("failed to create destination binary: %w", err)
+	}
+	defer destFile.Close()
+
+	if _, err := io.Copy(destFile, sourceFile); err != nil {
+		return fmt.Errorf("failed to copy binary: %w", err)
 	}
 
-	// Make the binary executable
-	if err := os.Chmod(binaryPath, 0755); err != nil {
+	// Make executable
+	if err := os.Chmod(expectedPath, 0755); err != nil {
 		return fmt.Errorf("failed to make binary executable: %w", err)
 	}
 
-	i.logger.Infof("Agent binary installed successfully to: %s", binaryPath)
+	i.logger.Infof("Agent binary installed to: %s", expectedPath)
 	return nil
 }
 
@@ -788,12 +651,6 @@ func (i *Installer) enrollCSR(nonce, csr string) (string, string, error) {
 		"csr_base64": csrBase64,
 	}
 
-	i.logger.Infof("Sending CSR enrollment request to: %s", APIBase+"/v1-app/enroll/csr")
-	i.logger.Infof("CSR length: %d bytes", len(csr))
-	i.logger.Infof("Base64 CSR length: %d bytes", len(csrBase64))
-	i.logger.Infof("Token length: %d bytes", len(i.bootstrapToken))
-	i.logger.Infof("Nonce length: %d bytes", len(nonce))
-
 	resp, err := i.httpPost(APIBase+"/v1-app/enroll/csr", payload)
 	if err != nil {
 		return "", "", fmt.Errorf("CSR enrollment request failed: %w", err)
@@ -808,8 +665,6 @@ func (i *Installer) enrollCSR(nonce, csr string) (string, string, error) {
 	certChain := strings.Join(response.Chain, "\n")
 
 	i.logger.Info("Received signed certificate successfully")
-	i.logger.Infof("Certificate PEM length: %d bytes", len(response.CertPEM))
-	i.logger.Infof("Certificate chain parts: %d", len(response.Chain))
 	return response.CertPEM, certChain, nil
 }
 
@@ -826,7 +681,7 @@ func (i *Installer) httpPost(url string, payload interface{}) ([]byte, error) {
 
 	// Add required headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "StreamDeploy-Installer/1.0")
+	req.Header.Set("User-Agent", "StreamDeploy-Agent/1.0")
 	req.Header.Set("x-device-id", i.deviceID)
 
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -901,8 +756,8 @@ WantedBy=multi-user.target
 	return nil
 }
 
-func (i *Installer) startService() error {
-	i.logger.Info("Starting StreamDeploy agent service...")
+func (i *Installer) enableAndStartService() error {
+	i.logger.Info("Enabling and starting StreamDeploy agent service...")
 
 	if !i.commandExists("systemctl") {
 		i.logger.Info("systemctl not available, skipping service start")
@@ -921,6 +776,31 @@ func (i *Installer) startService() error {
 		}
 	}
 
-	i.logger.Info("StreamDeploy agent service started")
+	i.logger.Info("StreamDeploy agent service enabled and started")
 	return nil
+}
+
+func (i *Installer) runCommand(command string) error {
+	cmd := exec.Command("sh", "-c", command)
+	return cmd.Run()
+}
+
+// loadDeviceConfig loads the device configuration from file
+func loadDeviceConfig(configPath string) (*DeviceConfig, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	var config DeviceConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	// Set defaults if not specified
+	if config.PKIDir == "" {
+		config.PKIDir = PKIDir
+	}
+
+	return &config, nil
 }
