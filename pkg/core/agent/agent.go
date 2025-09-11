@@ -12,12 +12,13 @@ import (
 )
 
 type CoreAgent struct {
-	configManager    types.ConfigManager
-	logger           types.Logger
-	httpClient       types.HTTPClient
-	mqttClient       types.MQTTClient
-	metricsCollector types.MetricsCollector
-	containerManager types.ContainerManager
+	configManager      types.ConfigManager
+	logger             types.Logger
+	httpClient         types.HTTPClient
+	mqttClient         types.MQTTClient
+	metricsCollector   types.MetricsCollector
+	containerManager   types.ContainerManager
+	certificateManager types.CertificateManager
 
 	// Control channels
 	ctx     context.Context
@@ -25,8 +26,9 @@ type CoreAgent struct {
 	running bool
 
 	// Timing
-	heartbeatInterval time.Duration
-	updateInterval    time.Duration
+	heartbeatInterval        time.Duration
+	updateInterval           time.Duration
+	certificateCheckInterval time.Duration
 }
 
 // NewCoreAgent creates a new core agent instance
@@ -51,6 +53,7 @@ func NewCoreAgent(deviceConfigPath string) (*CoreAgent, error) {
 	// Parse timing intervals
 	agent.heartbeatInterval = configManager.GetHeartbeatFrequency()
 	agent.updateInterval = configManager.GetUpdateFrequency()
+	agent.certificateCheckInterval = 24 * time.Hour // Check certificates daily
 
 	logger.Info("Core agent initialized successfully")
 
@@ -77,6 +80,11 @@ func (a *CoreAgent) SetContainerManager(manager types.ContainerManager) {
 	a.containerManager = manager
 }
 
+// SetCertificateManager sets the certificate manager implementation
+func (a *CoreAgent) SetCertificateManager(manager types.CertificateManager) {
+	a.certificateManager = manager
+}
+
 // Start starts the core agent
 func (a *CoreAgent) Start() error {
 	if a.running {
@@ -98,6 +106,7 @@ func (a *CoreAgent) Start() error {
 	// Start worker goroutines
 	go a.heartbeatLoop()
 	go a.updateLoop()
+	go a.certificateCheckLoop()
 
 	a.logger.Info("Core agent started successfully")
 	return nil
@@ -161,6 +170,36 @@ func (a *CoreAgent) updateLoop() {
 		case <-ticker.C:
 			if err := a.performUpdateCheck(); err != nil {
 				a.logger.Errorf("Update check failed: %v", err)
+			}
+		}
+	}
+}
+
+// certificateCheckLoop runs the certificate check loop
+func (a *CoreAgent) certificateCheckLoop() {
+	if a.certificateManager == nil {
+		a.logger.Info("Certificate manager not configured, skipping certificate checks")
+		return
+	}
+
+	a.logger.Infof("Certificate check loop started with interval: %v", a.certificateCheckInterval)
+
+	ticker := time.NewTicker(a.certificateCheckInterval)
+	defer ticker.Stop()
+
+	// Perform initial certificate check
+	if err := a.performCertificateCheck(); err != nil {
+		a.logger.Errorf("Initial certificate check failed: %v", err)
+	}
+
+	for {
+		select {
+		case <-a.ctx.Done():
+			a.logger.Info("Certificate check loop stopped")
+			return
+		case <-ticker.C:
+			if err := a.performCertificateCheck(); err != nil {
+				a.logger.Errorf("Certificate check failed: %v", err)
 			}
 		}
 	}
@@ -395,6 +434,54 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 		a.logger.Info("State configuration updated")
 	}
 
+	return nil
+}
+
+// performCertificateCheck checks certificate expiration and renews if necessary
+func (a *CoreAgent) performCertificateCheck() error {
+	a.logger.Info("Performing certificate expiration check")
+
+	// Check if certificate is expiring within 30 days
+	if !a.certificateManager.IsCertificateExpiringSoon(30) {
+		a.logger.Info("Certificate is not expiring soon")
+		return nil
+	}
+
+	a.logger.Info("Certificate is expiring soon, initiating renewal")
+
+	// Get device configuration for renewal endpoint
+	deviceConfig := a.configManager.GetDeviceConfig()
+	if deviceConfig == nil {
+		return fmt.Errorf("device config is nil")
+	}
+
+	deviceID := a.configManager.GetDeviceID()
+	enrollEndpoint := deviceConfig.HTTPSMTLSEndpoint
+
+	// Renew the certificate
+	if err := a.certificateManager.RenewCertificate(deviceID, enrollEndpoint); err != nil {
+		return fmt.Errorf("failed to renew certificate: %w", err)
+	}
+
+	// Update HTTP client with new certificates if available
+	if a.httpClient != nil {
+		caCertPath := a.certificateManager.GetCACertificatePath()
+		certPath := a.certificateManager.GetCertificatePath()
+		keyPath := a.certificateManager.GetPrivateKeyPath()
+
+		// Check if the HTTP client supports certificate updates
+		if updater, ok := a.httpClient.(interface {
+			UpdateCertificates(caCertPath, certPath, keyPath string) error
+		}); ok {
+			if err := updater.UpdateCertificates(caCertPath, certPath, keyPath); err != nil {
+				a.logger.Errorf("Failed to update HTTP client certificates: %v", err)
+			} else {
+				a.logger.Info("HTTP client certificates updated successfully")
+			}
+		}
+	}
+
+	a.logger.Info("Certificate renewal completed successfully")
 	return nil
 }
 
