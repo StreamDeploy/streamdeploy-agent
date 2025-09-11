@@ -90,11 +90,11 @@ func setupFullGoComponents(coreAgent *agent.CoreAgent, configPath string) error 
 	coreAgent.SetContainerManager(containerManager)
 	logger.Info("Container manager configured")
 
-	// Set up HTTPS client
+	// Set up HTTPS client with correct certificate paths from installer
 	pkiDir := deviceConfig.PKIDir
-	caCertPath := filepath.Join(pkiDir, "ca.pem")
-	certPath := filepath.Join(pkiDir, "client.pem")
-	keyPath := filepath.Join(pkiDir, "client-key.pem")
+	caCertPath := filepath.Join(pkiDir, "ca.crt")
+	certPath := filepath.Join(pkiDir, "device.crt")
+	keyPath := filepath.Join(pkiDir, "device.key")
 
 	httpsClient, err := https.NewClient(
 		deviceConfig.HTTPSMTLSEndpoint,
@@ -104,11 +104,11 @@ func setupFullGoComponents(coreAgent *agent.CoreAgent, configPath string) error 
 	)
 	if err != nil {
 		logger.Errorf("Failed to create HTTPS client: %v", err)
-		// Don't fail completely, agent can still work without HTTPS
-	} else {
-		coreAgent.SetHTTPClient(httpsClient)
-		logger.Info("HTTPS client configured")
+		return fmt.Errorf("HTTPS client is required but failed to initialize: %w", err)
 	}
+
+	coreAgent.SetHTTPClient(httpsClient)
+	logger.Info("HTTPS client configured")
 
 	// Set up certificate manager
 	// Import the certificate package
@@ -177,15 +177,15 @@ func (c *certificateManagerWrapper) RenewCertificate(deviceID, enrollEndpoint st
 }
 
 func (c *certificateManagerWrapper) GetCACertificatePath() string {
-	return filepath.Join(c.pkiDir, "ca.pem")
+	return filepath.Join(c.pkiDir, "ca.crt")
 }
 
 func (c *certificateManagerWrapper) GetCertificatePath() string {
-	return filepath.Join(c.pkiDir, "client.pem")
+	return filepath.Join(c.pkiDir, "device.crt")
 }
 
 func (c *certificateManagerWrapper) GetPrivateKeyPath() string {
-	return filepath.Join(c.pkiDir, "client-key.pem")
+	return filepath.Join(c.pkiDir, "device.key")
 }
 
 // loadDeviceConfig loads the device configuration from file
