@@ -1,7 +1,7 @@
 # StreamDeploy Agent - Go Implementation
 # Makefile for building agent and installer
 
-.PHONY: all build clean test agent installer deps build-linux-arm64 build-linux-arm build-linux-riscv64 build-linux-amd64 build-android
+.PHONY: all build clean test agent installer deps build-linux-arm64 build-linux-arm build-linux-riscv64 build-linux-amd64
 
 # Go build settings
 GO := go
@@ -25,7 +25,7 @@ deps:
 	$(GO) mod tidy
 
 # Build all binaries for all architectures
-build: $(BUILD_DIR) build-linux-arm64 build-linux-arm build-linux-riscv64 build-linux-amd64 build-android
+build: $(BUILD_DIR) build-linux-arm64 build-linux-arm build-linux-riscv64 build-linux-amd64
 
 # Build for Linux ARM64 (AArch64) - Jetson Orin, RK3588, Pi 4/5 64-bit, most modern SBCs
 build-linux-arm64: $(BUILD_DIR)
@@ -53,18 +53,6 @@ build-linux-amd64: $(BUILD_DIR)
 	@echo "Building for Linux AMD64..."
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(AGENT_BINARY)-linux-amd64 ./cmd/agent
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(INSTALLER_BINARY)-linux-amd64 ./cmd/installer
-
-# Build for Android architectures
-build-android: $(BUILD_DIR)
-	@echo "Building for Android ARM..."
-	GOOS=android GOARCH=arm CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(AGENT_BINARY)-android-arm ./cmd/agent
-	GOOS=android GOARCH=arm CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(INSTALLER_BINARY)-android-arm ./cmd/installer
-	@echo "Building for Android ARM64..."
-	GOOS=android GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(AGENT_BINARY)-android-arm64 ./cmd/agent
-	GOOS=android GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(INSTALLER_BINARY)-android-arm64 ./cmd/installer
-	@echo "Building for Android AMD64..."
-	GOOS=android GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(AGENT_BINARY)-android-amd64 ./cmd/agent
-	GOOS=android GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(INSTALLER_BINARY)-android-amd64 ./cmd/installer
 
 # Build the full Go agent (for local development)
 agent: $(BUILD_DIR)
@@ -157,7 +145,6 @@ help:
 	@echo "  build-linux-arm     - Build for Linux ARM 32-bit (ARMv6/v7) - Pi Zero/2W, older Pi"
 	@echo "  build-linux-riscv64 - Build for Linux RISC-V 64-bit - Milk-V, Lichee SBCs"
 	@echo "  build-linux-amd64   - Build for Linux AMD64 - x86_64 gateways/NVRs"
-	@echo "  build-android       - Build for Android (ARM, ARM64, AMD64)"
 	@echo ""
 	@echo "Development targets:"
 	@echo "  test                - Run tests"
