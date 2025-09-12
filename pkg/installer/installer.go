@@ -645,7 +645,6 @@ func (i *Installer) generateKeyAndCSR() (string, string, error) {
 	csrStr := string(pem.EncodeToMemory(csrPEM))
 
 	i.logger.Info("Generated key and CSR successfully")
-	i.logger.Infof("CSR includes DNS SAN: %s and SPIFFE URI: spiffe://streamdeploy.com/device/%s", i.deviceID, i.deviceID)
 	return privateKeyStr, csrStr, nil
 }
 
@@ -871,6 +870,8 @@ func (i *Installer) verifyServiceRunning() error {
 
 	// Check service status
 	cmd := exec.Command("systemctl", "is-active", "streamdeploy-agent")
+	// Set working directory to root to avoid getcwd() issues
+	cmd.Dir = "/"
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("service is not active: %w", err)

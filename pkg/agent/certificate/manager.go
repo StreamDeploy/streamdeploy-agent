@@ -131,7 +131,7 @@ func (m *Manager) RenewCertificate(deviceID, enrollEndpoint string) error {
 	// Base64 encode the CSR
 	csrBase64 := base64.StdEncoding.EncodeToString(csrPEM)
 
-	m.logger.Infof("Generated CSR for renewal with DNS SAN: %s and SPIFFE URI: %s", deviceID, spiffeURI)
+	m.logger.Info("Generated CSR for renewal with DNS SAN")
 
 	// Prepare the request payload
 	requestPayload := map[string]string{

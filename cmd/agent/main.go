@@ -221,6 +221,8 @@ func (c *certificateManagerImpl) GetCertificateInfo() (*types.CertificateInfo, e
 
 	// Get certificate expiration using openssl
 	cmd := exec.Command("openssl", "x509", "-in", certPath, "-noout", "-dates")
+	// Set working directory to root to avoid getcwd() issues
+	cmd.Dir = "/"
 	output, err := cmd.Output()
 	if err != nil {
 		c.logger.Errorf("Failed to get certificate dates: %v", err)
@@ -558,6 +560,8 @@ func isServiceActive() bool {
 	}
 
 	cmd := exec.Command("systemctl", "is-active", "streamdeploy-agent")
+	// Set working directory to root to avoid getcwd() issues
+	cmd.Dir = "/"
 	output, err := cmd.Output()
 	if err != nil {
 		return false
@@ -585,6 +589,8 @@ func getServiceStatus() (string, error) {
 	}
 
 	cmd := exec.Command("systemctl", "is-active", "streamdeploy-agent")
+	// Set working directory to root to avoid getcwd() issues
+	cmd.Dir = "/"
 	output, err := cmd.Output()
 	if err != nil {
 		// systemctl returns non-zero exit code for inactive services
