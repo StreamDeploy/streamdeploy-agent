@@ -112,7 +112,7 @@ func (c *Client) SendHeartbeat(payload *types.HeartbeatPayload, deviceID string)
 
 // SendStatusUpdate sends a status update message
 func (c *Client) SendStatusUpdate(payload *types.StatusUpdatePayload, deviceID string) (*types.HTTPResponse, error) {
-	url := fmt.Sprintf("%s/v1-device/status", c.baseURL)
+	url := fmt.Sprintf("%s/v1-device/status-update", c.baseURL)
 
 	data, err := json.Marshal(payload)
 	if err != nil {
