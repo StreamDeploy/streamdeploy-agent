@@ -47,13 +47,19 @@ func (c *Client) setupTLSConfig() error {
 		return fmt.Errorf("failed to load client certificate: %w", err)
 	}
 
-	// Load CA certificate
+	// Load system root CAs first
+	caCertPool, err := x509.SystemCertPool()
+	if err != nil {
+		// Fallback to empty pool on systems without system cert pool
+		caCertPool = x509.NewCertPool()
+	}
+
+	// Then append our private CA
 	caCert, err := os.ReadFile(c.caCertPath)
 	if err != nil {
 		return fmt.Errorf("failed to read CA certificate: %w", err)
 	}
 
-	caCertPool := x509.NewCertPool()
 	if !caCertPool.AppendCertsFromPEM(caCert) {
 		return fmt.Errorf("failed to parse CA certificate")
 	}
