@@ -421,6 +421,10 @@ func (i *Installer) installDependencies() error {
 func (i *Installer) runCommandWithLog(command string, description string) error {
 	i.logger.Infof("Running: %s", description)
 	cmd := exec.Command("sh", "-c", command)
+
+	// Set working directory to root to avoid getcwd() issues
+	cmd.Dir = "/"
+
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		i.logger.Errorf("Command failed: %s", string(output))
@@ -813,6 +817,10 @@ func (i *Installer) enableAndStartService() error {
 
 func (i *Installer) runCommand(command string) error {
 	cmd := exec.Command("sh", "-c", command)
+
+	// Set working directory to root to avoid getcwd() issues
+	cmd.Dir = "/"
+
 	return cmd.Run()
 }
 

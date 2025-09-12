@@ -270,7 +270,7 @@ func (a *CoreAgent) sendHeartbeat() error {
 	}
 
 	// Determine system status
-	status := "healthy"
+	status := "normal"
 	if a.metricsCollector != nil {
 		cpuPct, _ := metrics["cpu_pct"].(float64)
 		memPct, _ := metrics["mem_pct"].(float64)

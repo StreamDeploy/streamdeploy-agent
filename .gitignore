@@ -106,3 +106,4 @@ debian/tmp/
 local/
 scratch/
 experiments/
+agent

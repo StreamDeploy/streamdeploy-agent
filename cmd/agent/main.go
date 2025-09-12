@@ -712,6 +712,10 @@ func enableAndStartService(logger types.Logger) error {
 	for _, cmdInfo := range commands {
 		logger.Infof("Running: %s", cmdInfo.desc)
 		cmd := exec.Command(cmdInfo.cmd[0], cmdInfo.cmd[1:]...)
+
+		// Set working directory to root to avoid getcwd() issues
+		cmd.Dir = "/"
+
 		if output, err := cmd.CombinedOutput(); err != nil {
 			logger.Errorf("Failed to run %s: %v, output: %s", cmdInfo.desc, err, string(output))
 			return fmt.Errorf("failed to run %s: %w", cmdInfo.desc, err)

@@ -70,7 +70,7 @@ func (c *Collector) CollectCustomMetrics(commands map[string]string) (map[string
 
 		// Clean up the output
 		result := strings.TrimSpace(string(output))
-		
+
 		// Try to parse as number, otherwise keep as string
 		if floatVal, err := strconv.ParseFloat(result, 64); err == nil {
 			metrics[name] = floatVal
@@ -88,17 +88,17 @@ func (c *Collector) CollectCustomMetrics(commands map[string]string) (map[string
 func (c *Collector) DetermineSystemStatus(cpuPct, memPct, diskPct float64, containersHealthy bool) string {
 	// Define thresholds
 	const (
-		cpuWarningThreshold  = 80.0
-		cpuCriticalThreshold = 95.0
-		memWarningThreshold  = 80.0
-		memCriticalThreshold = 95.0
-		diskWarningThreshold = 85.0
+		cpuWarningThreshold   = 80.0
+		cpuCriticalThreshold  = 95.0
+		memWarningThreshold   = 80.0
+		memCriticalThreshold  = 95.0
+		diskWarningThreshold  = 85.0
 		diskCriticalThreshold = 95.0
 	)
 
 	// Check for critical conditions
 	if cpuPct >= cpuCriticalThreshold || memPct >= memCriticalThreshold || diskPct >= diskCriticalThreshold {
-		return "critical"
+		return "degraded"
 	}
 
 	// Check if containers are unhealthy
@@ -108,10 +108,10 @@ func (c *Collector) DetermineSystemStatus(cpuPct, memPct, diskPct float64, conta
 
 	// Check for warning conditions
 	if cpuPct >= cpuWarningThreshold || memPct >= memWarningThreshold || diskPct >= diskWarningThreshold {
-		return "warning"
+		return "degraded"
 	}
 
-	return "healthy"
+	return "normal"
 }
 
 // getCPUUsage gets the current CPU usage percentage
