@@ -19,6 +19,7 @@ type CoreAgent struct {
 	metricsCollector   types.MetricsCollector
 	containerManager   types.ContainerManager
 	certificateManager types.CertificateManager
+	environmentManager types.EnvironmentManager
 
 	// Control channels
 	ctx     context.Context
@@ -83,6 +84,11 @@ func (a *CoreAgent) SetContainerManager(manager types.ContainerManager) {
 // SetCertificateManager sets the certificate manager implementation
 func (a *CoreAgent) SetCertificateManager(manager types.CertificateManager) {
 	a.certificateManager = manager
+}
+
+// SetEnvironmentManager sets the environment manager implementation
+func (a *CoreAgent) SetEnvironmentManager(manager types.EnvironmentManager) {
+	a.environmentManager = manager
 }
 
 // Start starts the core agent
@@ -427,6 +433,23 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 			}
 		}
 
+		// Sync system environment variables if environment manager is available
+		if a.environmentManager != nil {
+			oldEnv := make(map[string]string)
+			if currentState != nil {
+				oldEnv = currentState.Env
+			}
+
+			// Check if environment variables have changed
+			if !envMapsEqual(oldEnv, newState.Env) {
+				if err := a.syncEnvironmentVariables(oldEnv, newState.Env); err != nil {
+					a.logger.Errorf("Failed to sync system environment variables: %v", err)
+				} else {
+					a.logger.Info("System environment variables synchronized successfully")
+				}
+			}
+		}
+
 		if err := a.configManager.UpdateStateConfig(&newState); err != nil {
 			return fmt.Errorf("failed to update state config: %w", err)
 		}
@@ -507,4 +530,93 @@ func stateConfigsEqual(a, b *types.StateConfig) bool {
 	bJSON, _ := json.Marshal(b)
 
 	return string(aJSON) == string(bJSON)
+}
+
+// envMapsEqual compares two environment variable maps for equality
+func envMapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	for key, valueA := range a {
+		if valueB, exists := b[key]; !exists || valueA != valueB {
+			return false
+		}
+	}
+
+	return true
+}
+
+// syncEnvironmentVariables handles the synchronization of environment variables with proper diffing
+func (a *CoreAgent) syncEnvironmentVariables(oldEnv, newEnv map[string]string) error {
+	// Find variables to remove (in old but not in new)
+	varsToRemove := make([]string, 0)
+	for key := range oldEnv {
+		if _, exists := newEnv[key]; !exists {
+			varsToRemove = append(varsToRemove, key)
+		}
+	}
+
+	// Log the changes
+	if len(varsToRemove) > 0 {
+		a.logger.Infof("Removing environment variables: %v", varsToRemove)
+	}
+
+	// Find variables to add/update
+	varsChanged := make(map[string]string)
+	for key, newValue := range newEnv {
+		if oldValue, exists := oldEnv[key]; !exists || oldValue != newValue {
+			varsChanged[key] = newValue
+		}
+	}
+
+	if len(varsChanged) > 0 {
+		a.logger.Infof("Adding/updating environment variables: %v", getKeys(varsChanged))
+	}
+
+	// If we have variables to remove, we need to handle the removal
+	if len(varsToRemove) > 0 {
+		// Get current system environment variables managed by StreamDeploy
+		currentSystemEnv, err := a.environmentManager.GetCurrentSystemEnvironment()
+		if err != nil {
+			a.logger.Errorf("Failed to get current system environment: %v", err)
+			// Continue with sync anyway
+			currentSystemEnv = make(map[string]string)
+		}
+
+		// Remove the variables that should no longer exist
+		updatedSystemEnv := make(map[string]string)
+		for key, value := range currentSystemEnv {
+			shouldRemove := false
+			for _, removeKey := range varsToRemove {
+				if key == removeKey {
+					shouldRemove = true
+					break
+				}
+			}
+			if !shouldRemove {
+				updatedSystemEnv[key] = value
+			}
+		}
+
+		// Add the new/updated variables
+		for key, value := range newEnv {
+			updatedSystemEnv[key] = value
+		}
+
+		// Sync the complete updated environment
+		return a.environmentManager.SyncSystemEnvironment(updatedSystemEnv)
+	}
+
+	// If no variables to remove, just sync the new environment
+	return a.environmentManager.SyncSystemEnvironment(newEnv)
+}
+
+// getKeys returns the keys of a map as a slice
+func getKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	return keys
 }

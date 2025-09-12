@@ -186,3 +186,10 @@ type CertificateManager interface {
 	GetCertificatePath() string
 	GetPrivateKeyPath() string
 }
+
+// EnvironmentManager interface for system environment management
+type EnvironmentManager interface {
+	SyncSystemEnvironment(envVars map[string]string) error
+	GetCurrentSystemEnvironment() (map[string]string, error)
+	RemoveSystemEnvironment() error
+}

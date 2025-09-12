@@ -17,6 +17,7 @@
     ],
     "containerLogin": "",
     "env": {
+        "SD_APP_PORT": "80"
     },
     "packages": [
         "curl", 

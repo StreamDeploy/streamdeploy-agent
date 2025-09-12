@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/agent/container"
+	"github.com/StreamDeploy/streamdeploy-agent/pkg/agent/environment"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/agent/https"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/agent/metrics"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/agent"
@@ -147,6 +148,11 @@ func setupFullGoComponents(coreAgent *agent.CoreAgent, configPath string) error 
 	certificateManager := createCertificateManager(pkiDir, deviceConfig.DeviceID, httpsClient, utils.NewLogger("CERT"))
 	coreAgent.SetCertificateManager(certificateManager)
 	logger.Info("Certificate manager configured with renewal support")
+
+	// Set up environment manager
+	environmentManager := environment.NewManager(utils.NewLogger("ENV"))
+	coreAgent.SetEnvironmentManager(environmentManager)
+	logger.Info("Environment manager configured")
 
 	// TODO: Set up MQTT client when implemented
 	// mqttClient, err := mqtt.NewClient(...)
