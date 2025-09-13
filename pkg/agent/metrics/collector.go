@@ -14,6 +14,11 @@ import (
 )
 
 // Collector implements the MetricsCollector interface for full Go
+// CPU collection now uses vmstat-style calculation:
+// - 1-second sampling interval between readings
+// - Includes all CPU time fields in total calculation
+// - Uses only idle field (not idle + iowait) for idle calculation
+// - Formula: 100 * (1 - (idle_diff / total_diff))
 type Collector struct {
 	// Sampling configuration
 	SampleCount    int           // Number of samples to take for averaging
@@ -23,8 +28,8 @@ type Collector struct {
 // NewCollector creates a new metrics collector with default sampling settings
 func NewCollector() types.MetricsCollector {
 	return &Collector{
-		SampleCount:    3,                      // Take 3 samples
-		SampleInterval: 500 * time.Millisecond, // 500ms between samples
+		SampleCount:    2,               // Take 2 samples (like vmstat)
+		SampleInterval: 1 * time.Second, // 1 second between samples (like vmstat)
 	}
 }
 
@@ -131,24 +136,24 @@ func (c *Collector) DetermineSystemStatus(cpuPct, memPct, diskPct float64, conta
 	return "normal"
 }
 
-// getCPUUsage gets the current CPU usage percentage
+// getCPUUsage gets the current CPU usage percentage using vmstat-style calculation
 func (c *Collector) getCPUUsage() (float64, error) {
-	// Read /proc/stat twice with a small delay to calculate CPU usage
+	// Read /proc/stat twice with a delay to calculate CPU usage (like vmstat)
 	stat1, err := c.readCPUStat()
 	if err != nil {
 		return 0, err
 	}
 
-	// Small delay
-	// time.Sleep(100 * time.Millisecond)
+	// Wait 1 second like vmstat does
+	time.Sleep(1 * time.Second)
 
 	stat2, err := c.readCPUStat()
 	if err != nil {
 		return 0, err
 	}
 
-	// Calculate CPU usage percentage
-	// idle includes both idle and iowait time (Linux considers both as idle)
+	// Calculate CPU usage percentage using vmstat formula
+	// vmstat uses: 100 * (1 - (idle_diff / total_diff))
 	totalDiff := stat2.total - stat1.total
 	idleDiff := stat2.idle - stat1.idle
 
@@ -156,12 +161,32 @@ func (c *Collector) getCPUUsage() (float64, error) {
 		return 0, nil
 	}
 
+	// vmstat-style calculation: idle is just the idle field, not idle + iowait
 	cpuUsage := 100.0 * (1.0 - float64(idleDiff)/float64(totalDiff))
 	return cpuUsage, nil
 }
 
-// getCPUUsageSampled gets the average CPU usage over multiple samples
+// getCPUUsageSampled gets the average CPU usage over multiple samples (vmstat-style)
 func (c *Collector) getCPUUsageSampled() (float64, error) {
+	// For vmstat-style, we typically just take 2 samples with 1-second interval
+	// The getCPUUsage() function already includes the 1-second delay
+	if c.SampleCount == 2 {
+		// Take two samples with the built-in delay
+		usage1, err := c.getCPUUsage()
+		if err != nil {
+			return 0, err
+		}
+
+		usage2, err := c.getCPUUsage()
+		if err != nil {
+			return 0, err
+		}
+
+		// Return average of the two samples
+		return (usage1 + usage2) / 2.0, nil
+	}
+
+	// Fallback to original sampling method for other configurations
 	var totalUsage float64
 	var validSamples int
 
@@ -224,10 +249,10 @@ func (c *Collector) getMemoryUsageSampled() (float64, error) {
 	return totalUsage / float64(validSamples), nil
 }
 
-// cpuStat represents CPU statistics from /proc/stat
+// cpuStat represents CPU statistics from /proc/stat (vmstat-style)
 type cpuStat struct {
-	total uint64
-	idle  uint64
+	total uint64 // Total CPU time (all fields)
+	idle  uint64 // Just the idle field (not idle + iowait like before)
 }
 
 // readCPUStat reads CPU statistics from /proc/stat
@@ -264,36 +289,39 @@ func (c *Collector) readCPUStat() (*cpuStat, error) {
 		return nil, fmt.Errorf("insufficient CPU time fields")
 	}
 
-	// Calculate total and idle time
-	// Linux considers both idle and iowait as idle for the classic formula
-	// This is important for devices like Raspberry Pi with SD card I/O
+	// Calculate total and idle time using vmstat approach
+	// vmstat includes ALL fields in total, but only uses idle field for idle calculation
 	user := times[0]   // user
 	nice := times[1]   // nice
 	system := times[2] // system
 	idle := times[3]   // idle
 	iowait := times[4] // iowait (5th field, index 4)
 
-	// Calculate nonidle and idle_now
-	nonidle := user + nice + system
+	// Calculate total time (sum of all available fields)
+	total := user + nice + system + idle
 	if len(times) > 4 {
-		// Add irq, softirq, steal if available
-		if len(times) > 5 {
-			nonidle += times[5] // irq
-		}
-		if len(times) > 6 {
-			nonidle += times[6] // softirq
-		}
-		if len(times) > 7 {
-			nonidle += times[7] // steal
-		}
+		total += iowait // iowait
+	}
+	if len(times) > 5 {
+		total += times[5] // irq
+	}
+	if len(times) > 6 {
+		total += times[6] // softirq
+	}
+	if len(times) > 7 {
+		total += times[7] // steal
+	}
+	if len(times) > 8 {
+		total += times[8] // guest
+	}
+	if len(times) > 9 {
+		total += times[9] // guest_nice
 	}
 
-	idleNow := idle + iowait
-	total := idleNow + nonidle
-
+	// vmstat uses just the idle field (not idle + iowait)
 	return &cpuStat{
 		total: total,
-		idle:  idleNow,
+		idle:  idle,
 	}, nil
 }
 

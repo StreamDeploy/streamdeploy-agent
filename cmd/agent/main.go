@@ -978,7 +978,7 @@ func copyBinaryToInstallDir(logger types.Logger, sourcePath, destPath string) er
 func createServiceFile(logger types.Logger) error {
 	logger.Info("Creating systemd service file...")
 
-	serviceContent := fmt.Sprintf(`[Unit]
+	serviceContent := `[Unit]
 Description=StreamDeploy Agent
 After=network.target
 Wants=network.target
@@ -1002,7 +1002,7 @@ ReadWritePaths=/etc/streamdeploy /var/lib/streamdeploy /var/log
 
 [Install]
 WantedBy=multi-user.target
-`)
+`
 
 	if err := os.WriteFile("/etc/systemd/system/streamdeploy-agent.service", []byte(serviceContent), 0644); err != nil {
 		return fmt.Errorf("failed to write service file: %w", err)
