@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -42,25 +43,10 @@ func main() {
 	logger.Infof("StreamDeploy Agent starting...")
 	logger.Infof("Using config: %s", configPath)
 
-	// Check if we need to run installer first
-	if installer.NeedsInstallation(logger, configPath) {
-		logger.Info("Certificates not found or installation incomplete. Running installer flow...")
-
-		installerInstance := installer.New(logger)
-		if err := installerInstance.Run(); err != nil {
-			logger.Errorf("Installation failed: %v", err)
-			os.Exit(1)
-		}
-
-		// If we reach here, something went wrong - installer should have exited after completion
-		logger.Error("Installer should have exited after successful completion")
+	// Run modular initialization flow
+	if err := runModularInitialization(logger, configPath); err != nil {
+		logger.Errorf("Initialization failed: %v", err)
 		os.Exit(1)
-	}
-
-	// After installation or if certificates exist, check systemctl status
-	if err := checkAndRegisterSystemctl(logger); err != nil {
-		logger.Errorf("Failed to check/register systemctl: %v", err)
-		// Don't exit here, continue with agent startup
 	}
 
 	// Create core agent
@@ -463,6 +449,438 @@ func (c *certificateManagerImpl) saveCertificateChain(leafCertPEM string, interm
 	}
 
 	c.logger.Info("Saved certificate files: device.crt (leaf), intermediate.crt, fullchain.crt")
+	return nil
+}
+
+// runModularInitialization performs modular initialization checks
+func runModularInitialization(logger types.Logger, configPath string) error {
+	logger.Info("Starting modular initialization flow...")
+
+	// Step 1: Check and create agent.json if needed
+	if err := ensureAgentConfig(logger, configPath); err != nil {
+		return fmt.Errorf("failed to ensure agent config: %w", err)
+	}
+
+	// Step 2: Check and create state.json if needed
+	if err := ensureStateConfig(logger); err != nil {
+		return fmt.Errorf("failed to ensure state config: %w", err)
+	}
+
+	// Step 3: Check and perform certificate flow if needed
+	if err := ensureCertificates(logger, configPath); err != nil {
+		return fmt.Errorf("failed to ensure certificates: %w", err)
+	}
+
+	// Step 4: Handle systemd service management
+	if err := handleSystemdService(logger, configPath); err != nil {
+		return fmt.Errorf("failed to handle systemd service: %w", err)
+	}
+
+	logger.Info("Modular initialization completed successfully")
+	return nil
+}
+
+// ensureAgentConfig checks if agent.json exists, creates it if not
+func ensureAgentConfig(logger types.Logger, configPath string) error {
+	logger.Info("Checking agent.json configuration...")
+
+	if _, err := os.Stat(configPath); err == nil {
+		logger.Info("agent.json already exists")
+		return nil
+	}
+
+	logger.Info("agent.json not found, creating default configuration...")
+
+	// Get bootstrap token for device ID extraction
+	bootstrapToken := getBootstrapToken()
+	if bootstrapToken == "" {
+		return fmt.Errorf("bootstrap token is required to create agent.json. Usage: sudo ./streamdeploy-agent <token> or export SD_BOOTSTRAP_TOKEN=\"your-token\"")
+	}
+
+	// Extract device ID from JWT
+	deviceID, err := extractDeviceIDFromJWT(bootstrapToken)
+	if err != nil {
+		return fmt.Errorf("failed to extract device_id from bootstrap token: %w", err)
+	}
+
+	// Detect system information
+	osInfo, err := detectSystemInfo()
+	if err != nil {
+		return fmt.Errorf("failed to detect system information: %w", err)
+	}
+
+	// Create device config
+	deviceConfig := DeviceConfig{
+		DeviceID:           deviceID,
+		EnrollBaseURL:      "https://api.streamdeploy.com",
+		HTTPSMTLSEndpoint:  "https://device.streamdeploy.com",
+		MQTTWSMTLSEndpoint: "https://mqtt.streamdeploy.com",
+		PKIDir:             "/etc/streamdeploy/pki",
+		OSName:             osInfo.OSName,
+		OSVersion:          osInfo.OSVersion,
+		Architecture:       osInfo.Architecture,
+	}
+
+	// Create config directory
+	configDir := filepath.Dir(configPath)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	// Write config file
+	if err := writeJSONFile(configPath, deviceConfig); err != nil {
+		return fmt.Errorf("failed to write agent config: %w", err)
+	}
+
+	logger.Infof("Created agent.json with device ID: %s", deviceID)
+	return nil
+}
+
+// ensureStateConfig checks if state.json exists, creates it if not
+func ensureStateConfig(logger types.Logger) error {
+	logger.Info("Checking state.json configuration...")
+
+	stateConfigPath := "/etc/streamdeploy/state.json"
+	if _, err := os.Stat(stateConfigPath); err == nil {
+		logger.Info("state.json already exists")
+		return nil
+	}
+
+	logger.Info("state.json not found, creating default configuration...")
+
+	// Create state config with default values
+	stateConfig := map[string]interface{}{
+		"schemaVersion": "1.0",
+		"agent_setting": map[string]string{
+			"heartbeat_frequency": "15s",
+			"update_frequency":    "30s",
+			"mode":                "http",
+			"agent_ver":           "1",
+		},
+		"containers":      []interface{}{},
+		"containerLogin":  "",
+		"env":             map[string]string{},
+		"packages":        []string{"curl", "ca-certificates", "systemd", "docker.io"},
+		"custom_metrics":  map[string]string{},
+		"custom_packages": map[string]interface{}{},
+	}
+
+	// Create config directory
+	if err := os.MkdirAll("/etc/streamdeploy", 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	// Write state config file
+	if err := writeJSONFile(stateConfigPath, stateConfig); err != nil {
+		return fmt.Errorf("failed to write state config: %w", err)
+	}
+
+	logger.Info("Created state.json with default configuration")
+	return nil
+}
+
+// ensureCertificates checks if certificates exist, runs cert flow if not
+func ensureCertificates(logger types.Logger, configPath string) error {
+	logger.Info("Checking certificates...")
+
+	// Load device config to get PKI directory
+	deviceConfig, err := loadDeviceConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to load device config: %w", err)
+	}
+
+	pkiDir := deviceConfig.PKIDir
+	if pkiDir == "" {
+		pkiDir = "/etc/streamdeploy/pki"
+	}
+
+	// Check if certificates exist
+	requiredFiles := []string{
+		filepath.Join(pkiDir, "ca.crt"),
+		filepath.Join(pkiDir, "device.crt"),
+		filepath.Join(pkiDir, "device.key"),
+		filepath.Join(pkiDir, "fullchain.crt"),
+	}
+
+	allExist := true
+	for _, file := range requiredFiles {
+		if _, err := os.Stat(file); os.IsNotExist(err) {
+			logger.Infof("Certificate file missing: %s", file)
+			allExist = false
+			break
+		}
+	}
+
+	if allExist {
+		logger.Info("All certificates found")
+		return nil
+	}
+
+	logger.Info("Certificates missing, running certificate enrollment flow...")
+
+	// Get bootstrap token
+	bootstrapToken := getBootstrapToken()
+	if bootstrapToken == "" {
+		return fmt.Errorf("bootstrap token is required for certificate enrollment")
+	}
+
+	// Run certificate enrollment using installer logic
+	if err := performCertificateEnrollment(logger, deviceConfig, bootstrapToken); err != nil {
+		return fmt.Errorf("certificate enrollment failed: %w", err)
+	}
+
+	logger.Info("Certificate enrollment completed successfully")
+	return nil
+}
+
+// handleSystemdService manages systemd service (stop, remove, replace, launch, kill self)
+func handleSystemdService(logger types.Logger, configPath string) error {
+	logger.Info("Handling systemd service management...")
+
+	// Check if systemctl is available
+	if !commandExists("systemctl") {
+		logger.Info("systemctl not available, skipping service management")
+		return nil
+	}
+
+	// Check if we have root privileges
+	if os.Geteuid() != 0 {
+		logger.Info("Not running as root, skipping service management")
+		return nil
+	}
+
+	// Get current executable path
+	currentBinary, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to get current executable path: %w", err)
+	}
+
+	expectedPath := "/usr/local/bin/streamdeploy-agent"
+
+	// Step 1: Stop existing service if running
+	if isServiceActive() {
+		logger.Info("Stopping existing streamdeploy-agent service...")
+		if err := runSystemCommand("systemctl", "stop", "streamdeploy-agent"); err != nil {
+			logger.Errorf("Failed to stop service: %v", err)
+		}
+	}
+
+	// Step 2: Remove existing service if installed
+	if isServiceInstalled() {
+		logger.Info("Disabling existing streamdeploy-agent service...")
+		if err := runSystemCommand("systemctl", "disable", "streamdeploy-agent"); err != nil {
+			logger.Errorf("Failed to disable service: %v", err)
+		}
+	}
+
+	// Step 3: Replace the streamdeploy file with own executable
+	if currentBinary != expectedPath {
+		logger.Infof("Copying binary from %s to %s", currentBinary, expectedPath)
+		if err := copyBinaryToInstallDir(logger, currentBinary, expectedPath); err != nil {
+			return fmt.Errorf("failed to copy binary to install directory: %w", err)
+		}
+	}
+
+	// Step 4: Create and launch systemd service
+	if err := createServiceFile(logger); err != nil {
+		return fmt.Errorf("failed to create service file: %w", err)
+	}
+
+	if err := enableAndStartService(logger); err != nil {
+		return fmt.Errorf("failed to enable and start service: %w", err)
+	}
+
+	// Step 5: Kill itself if we're not the installed binary
+	if currentBinary != expectedPath {
+		logger.Info("Service started successfully. Initialization complete, exiting installer...")
+
+		// Wait a moment for service to start
+		time.Sleep(2 * time.Second)
+
+		// Verify service is running
+		if !isServiceActive() {
+			return fmt.Errorf("service failed to start properly")
+		}
+
+		logger.Info("Service verified as running. Exiting installer process.")
+		os.Exit(0)
+	}
+
+	return nil
+}
+
+// Helper functions for modular initialization
+
+// getBootstrapToken gets bootstrap token from command line or environment
+func getBootstrapToken() string {
+	// Check command line argument (skip first arg which is the binary name)
+	if len(os.Args) >= 2 && len(os.Args[1]) > 0 && !strings.HasPrefix(os.Args[1], "/") {
+		return os.Args[1]
+	}
+
+	// Check environment variable
+	return os.Getenv("SD_BOOTSTRAP_TOKEN")
+}
+
+// extractDeviceIDFromJWT extracts device ID from JWT token
+func extractDeviceIDFromJWT(token string) (string, error) {
+	// JWT has 3 parts separated by dots: header.payload.signature
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", fmt.Errorf("invalid JWT format")
+	}
+
+	payload := parts[1]
+
+	// Add padding if needed for base64 decoding
+	for len(payload)%4 != 0 {
+		payload += "="
+	}
+
+	// Decode base64 payload
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode JWT payload: %w", err)
+	}
+
+	// Parse JSON to extract device_id
+	var claims map[string]interface{}
+	if err := json.Unmarshal(decoded, &claims); err != nil {
+		return "", fmt.Errorf("failed to parse JWT claims: %w", err)
+	}
+
+	deviceID, ok := claims["device_id"].(string)
+	if !ok {
+		return "", fmt.Errorf("device_id not found in JWT claims")
+	}
+
+	return deviceID, nil
+}
+
+// SystemInfo holds system detection information
+type SystemInfo struct {
+	OSName       string
+	OSVersion    string
+	Architecture string
+}
+
+// detectSystemInfo detects system information
+func detectSystemInfo() (*SystemInfo, error) {
+	// Detect OS from /etc/os-release
+	osInfo, err := parseOSRelease()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse /etc/os-release: %w", err)
+	}
+
+	// Detect architecture
+	arch := detectArchitecture()
+
+	return &SystemInfo{
+		OSName:       osInfo["ID"],
+		OSVersion:    osInfo["VERSION_ID"],
+		Architecture: arch,
+	}, nil
+}
+
+// parseOSRelease parses /etc/os-release file
+func parseOSRelease() (map[string]string, error) {
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return nil, err
+	}
+
+	osInfo := make(map[string]string)
+	lines := strings.Split(string(data), "\n")
+
+	for _, line := range lines {
+		if strings.Contains(line, "=") {
+			parts := strings.SplitN(line, "=", 2)
+			key := parts[0]
+			value := strings.Trim(parts[1], "\"")
+			osInfo[key] = value
+		}
+	}
+
+	return osInfo, nil
+}
+
+// detectArchitecture detects system architecture
+func detectArchitecture() string {
+	// Use Go's runtime to detect architecture
+	switch runtime.GOARCH {
+	case "amd64":
+		return "amd64"
+	case "arm64":
+		return "arm64"
+	case "arm":
+		return detectARMVariant()
+	case "riscv64":
+		return "riscv64"
+	default:
+		return runtime.GOARCH
+	}
+}
+
+// detectARMVariant detects ARM variant
+func detectARMVariant() string {
+	// Try to detect ARM variant by checking /proc/cpuinfo
+	if cpuInfo, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+		cpuInfoStr := string(cpuInfo)
+
+		// Look for ARM architecture version
+		if strings.Contains(cpuInfoStr, "ARMv6") {
+			return "armv6"
+		}
+		if strings.Contains(cpuInfoStr, "ARMv7") {
+			return "armv7"
+		}
+
+		// Check for specific CPU features that indicate ARMv7
+		if strings.Contains(cpuInfoStr, "vfpv3") || strings.Contains(cpuInfoStr, "neon") {
+			return "armv7"
+		}
+	}
+
+	// Default to armv7 if we can't determine the specific variant
+	return "armv7"
+}
+
+// writeJSONFile writes data to JSON file
+func writeJSONFile(path string, data interface{}) error {
+	jsonData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, jsonData, 0644)
+}
+
+// runSystemCommand runs a system command
+func runSystemCommand(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = "/"
+	return cmd.Run()
+}
+
+// performCertificateEnrollment performs certificate enrollment
+func performCertificateEnrollment(logger types.Logger, deviceConfig *DeviceConfig, bootstrapToken string) error {
+	logger.Info("Starting certificate enrollment process...")
+
+	// Create PKI directory
+	if err := os.MkdirAll(deviceConfig.PKIDir, 0755); err != nil {
+		return fmt.Errorf("failed to create PKI directory: %w", err)
+	}
+
+	// Use the installer package to perform certificate enrollment
+	installerInstance := installer.New(logger)
+
+	// Run the full installer which includes certificate enrollment
+	// This will handle the complete certificate flow
+	if err := installerInstance.Run(); err != nil {
+		return fmt.Errorf("certificate enrollment failed: %w", err)
+	}
+
+	logger.Info("Certificate enrollment completed successfully")
 	return nil
 }
 
