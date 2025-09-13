@@ -656,7 +656,12 @@ func handleSystemdService(logger types.Logger, configPath string) error {
 	}
 
 	// Check if we're already running under systemd (avoid recursive service management)
-	if os.Getenv("INVOCATION_ID") != "" {
+	invocationID := os.Getenv("INVOCATION_ID")
+	notifySocket := os.Getenv("NOTIFY_SOCKET")
+	logger.Infof("INVOCATION_ID: '%s', NOTIFY_SOCKET: '%s'", invocationID, notifySocket)
+
+	// Check multiple indicators of systemd execution
+	if invocationID != "" || notifySocket != "" {
 		logger.Info("Already running under systemd service, skipping service management")
 		return nil
 	}
@@ -987,8 +992,7 @@ RestartSec=10
 KillMode=mixed
 TimeoutStopSec=30
 
-# Environment variables for systemd detection
-Environment=INVOCATION_ID=%%i
+# systemd automatically sets INVOCATION_ID for service detection
 
 # Security settings
 NoNewPrivileges=true
