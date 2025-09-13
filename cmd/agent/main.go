@@ -655,6 +655,12 @@ func handleSystemdService(logger types.Logger, configPath string) error {
 		return nil
 	}
 
+	// Check if we're already running under systemd (avoid recursive service management)
+	if os.Getenv("INVOCATION_ID") != "" {
+		logger.Info("Already running under systemd service, skipping service management")
+		return nil
+	}
+
 	// Get current executable path
 	currentBinary, err := os.Executable()
 	if err != nil {
@@ -663,15 +669,15 @@ func handleSystemdService(logger types.Logger, configPath string) error {
 
 	expectedPath := "/usr/local/bin/streamdeploy-agent"
 
-	// Step 1: Stop existing service if running
+	// Step 1: Stop existing systemd service if running (we're running manually)
 	if isServiceActive() {
-		logger.Info("Stopping existing streamdeploy-agent service...")
+		logger.Info("Stopping existing streamdeploy-agent systemd service...")
 		if err := runSystemCommand("systemctl", "stop", "streamdeploy-agent"); err != nil {
 			logger.Errorf("Failed to stop service: %v", err)
 		}
 	}
 
-	// Step 2: Remove existing service if installed
+	// Step 2: Disable existing service if installed
 	if isServiceInstalled() {
 		logger.Info("Disabling existing streamdeploy-agent service...")
 		if err := runSystemCommand("systemctl", "disable", "streamdeploy-agent"); err != nil {
@@ -696,9 +702,9 @@ func handleSystemdService(logger types.Logger, configPath string) error {
 		return fmt.Errorf("failed to enable and start service: %w", err)
 	}
 
-	// Step 5: Kill itself if we're not the installed binary
+	// Step 5: Kill itself if we're not the installed binary (replace with systemd version)
 	if currentBinary != expectedPath {
-		logger.Info("Service started successfully. Initialization complete, exiting installer...")
+		logger.Info("Systemd service started successfully. Replacing manual process with systemd service...")
 
 		// Wait a moment for service to start
 		time.Sleep(2 * time.Second)
@@ -708,7 +714,7 @@ func handleSystemdService(logger types.Logger, configPath string) error {
 			return fmt.Errorf("service failed to start properly")
 		}
 
-		logger.Info("Service verified as running. Exiting installer process.")
+		logger.Info("Systemd service verified as running. Exiting manual process.")
 		os.Exit(0)
 	}
 
