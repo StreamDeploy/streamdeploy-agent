@@ -656,15 +656,12 @@ func handleSystemdService(logger types.Logger, configPath string) error {
 	}
 
 	// Check if we're already running under systemd (avoid recursive service management)
-	invocationID := os.Getenv("INVOCATION_ID")
-	notifySocket := os.Getenv("NOTIFY_SOCKET")
-	logger.Infof("INVOCATION_ID: '%s', NOTIFY_SOCKET: '%s'", invocationID, notifySocket)
-
-	// Check multiple indicators of systemd execution
-	if invocationID != "" || notifySocket != "" {
+	if isRunningUnderSystemd() {
 		logger.Info("Already running under systemd service, skipping service management")
 		return nil
 	}
+
+	logger.Info("Not running under systemd, proceeding with service management")
 
 	// Get current executable path
 	currentBinary, err := os.Executable()
@@ -711,15 +708,21 @@ func handleSystemdService(logger types.Logger, configPath string) error {
 	if currentBinary != expectedPath {
 		logger.Info("Systemd service started successfully. Replacing manual process with systemd service...")
 
-		// Wait a moment for service to start
-		time.Sleep(2 * time.Second)
+		// Wait longer for service to fully start and stabilize
+		time.Sleep(5 * time.Second)
 
-		// Verify service is running
+		// Verify service is running and stable
 		if !isServiceActive() {
 			return fmt.Errorf("service failed to start properly")
 		}
 
-		logger.Info("Systemd service verified as running. Exiting manual process.")
+		// Additional verification: check that the systemd instance is actually running
+		time.Sleep(2 * time.Second)
+		if !isServiceActive() {
+			return fmt.Errorf("service is not stable after start")
+		}
+
+		logger.Info("Systemd service verified as running and stable. Exiting manual process.")
 		os.Exit(0)
 	}
 
@@ -919,6 +922,59 @@ func loadDeviceConfig(configPath string) (*DeviceConfig, error) {
 	}
 
 	return &config, nil
+}
+
+// isRunningUnderSystemd checks if we're running under systemd using multiple indicators
+func isRunningUnderSystemd() bool {
+	// Check environment variables that systemd sets
+	invocationID := os.Getenv("INVOCATION_ID")
+	notifySocket := os.Getenv("NOTIFY_SOCKET")
+
+	logger := utils.NewLogger("SYSTEMD_DETECT")
+	logger.Infof("Checking systemd detection: INVOCATION_ID='%s', NOTIFY_SOCKET='%s'", invocationID, notifySocket)
+
+	// Check if we have systemd environment variables (most reliable)
+	if invocationID != "" || notifySocket != "" {
+		logger.Info("Detected systemd via environment variables")
+		return true
+	}
+
+	// Check if we have a systemd journal fd (fd 3 is typically used by systemd)
+	if fd3, err := os.Open("/proc/self/fd/3"); err == nil {
+		fd3.Close()
+		// Check if it's a systemd journal fd by checking the file descriptor info
+		if link, err := os.Readlink("/proc/self/fd/3"); err == nil && strings.Contains(link, "socket") {
+			logger.Info("Detected systemd via journal fd")
+			return true
+		}
+	}
+
+	// Check if we're running as a systemd service by checking our parent process
+	if ppid := os.Getppid(); ppid > 1 {
+		if cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", ppid)); err == nil {
+			cmdlineStr := strings.TrimRight(string(cmdline), "\x00")
+			logger.Infof("Parent process cmdline: %s", cmdlineStr)
+			if strings.Contains(cmdlineStr, "systemd") || strings.Contains(cmdlineStr, "systemctl") {
+				logger.Info("Detected systemd via parent process")
+				return true
+			}
+		}
+	}
+
+	// Check if we're running from the expected systemd location
+	if currentBinary, err := os.Executable(); err == nil {
+		logger.Infof("Current binary path: %s", currentBinary)
+		if currentBinary == "/usr/local/bin/streamdeploy-agent" {
+			// If we're running from the systemd location, check if systemd is managing us
+			if isServiceActive() {
+				logger.Info("Detected systemd via service status check")
+				return true
+			}
+		}
+	}
+
+	logger.Info("No systemd indicators found, assuming manual execution")
+	return false
 }
 
 // isServiceActive checks if our service is currently active in systemctl

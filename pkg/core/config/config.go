@@ -178,49 +178,73 @@ func getStateConfigPath(deviceConfigPath string) string {
 	return filepath.Join(dir, "state.json")
 }
 
-// ParseFrequency parses a frequency string (e.g., "15s", "1m", "1h") into seconds
+// ParseFrequency parses a frequency string (e.g., "15s", "1m", "1h", "1m30s", "2m 3s") into seconds
 func ParseFrequency(freq string) int {
 	if freq == "" {
 		return 15 // default 15 seconds
 	}
 
-	// Simple parser
 	freq = strings.TrimSpace(freq)
 	if len(freq) < 2 {
 		return 15
 	}
 
-	unit := freq[len(freq)-1]
-	valueStr := freq[:len(freq)-1]
+	totalSeconds := 0
 
-	// Simple integer parsing
-	value := 0
-	for _, r := range valueStr {
-		if r >= '0' && r <= '9' {
-			value = value*10 + int(r-'0')
-		} else {
-			return 15 // invalid format, return default
+	// Parse compound frequency strings like "1m30s" or "2m 3s"
+	// Split by spaces first, then parse each part
+	parts := strings.Fields(freq)
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if len(part) < 2 {
+			continue
+		}
+
+		// Find the unit (last character)
+		unit := part[len(part)-1]
+		valueStr := part[:len(part)-1]
+
+		// Parse the numeric value
+		value := 0
+		for _, r := range valueStr {
+			if r >= '0' && r <= '9' {
+				value = value*10 + int(r-'0')
+			} else {
+				// Invalid format, skip this part
+				value = 0
+				break
+			}
+		}
+
+		// Convert to seconds based on unit
+		switch unit {
+		case 's':
+			totalSeconds += value
+		case 'm':
+			totalSeconds += value * 60
+		case 'h':
+			totalSeconds += value * 3600
+		case 'd':
+			totalSeconds += value * 86400
+		case 'w':
+			totalSeconds += value * 604800
+		case 'M':
+			totalSeconds += value * 2592000 // 30 days
+		case 'y':
+			totalSeconds += value * 31536000 // 365 days
+		default:
+			// Invalid unit, skip this part
+			continue
 		}
 	}
 
-	switch unit {
-	case 's':
-		return value
-	case 'm':
-		return value * 60
-	case 'h':
-		return value * 3600
-	case 'd':
-		return value * 86400
-	case 'w':
-		return value * 604800
-	case 'M':
-		return value * 2592000 // 30 days
-	case 'y':
-		return value * 31536000 // 365 days
-	default:
+	// If no valid parts were parsed, return default
+	if totalSeconds == 0 {
 		return 15
 	}
+
+	return totalSeconds
 }
 
 // ParseFrequencyToDuration parses a frequency string into time.Duration
@@ -229,43 +253,67 @@ func ParseFrequencyToDuration(freq string) time.Duration {
 		return 15 * time.Second // default 15 seconds
 	}
 
-	// Simple parser
 	freq = strings.TrimSpace(freq)
 	if len(freq) < 2 {
 		return 15 * time.Second
 	}
 
-	unit := freq[len(freq)-1]
-	valueStr := freq[:len(freq)-1]
+	totalDuration := time.Duration(0)
 
-	// Simple integer parsing
-	value := 0
-	for _, r := range valueStr {
-		if r >= '0' && r <= '9' {
-			value = value*10 + int(r-'0')
-		} else {
-			return 15 * time.Second // invalid format, return default
+	// Parse compound frequency strings like "1m30s" or "2m 3s"
+	// Split by spaces first, then parse each part
+	parts := strings.Fields(freq)
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if len(part) < 2 {
+			continue
+		}
+
+		// Find the unit (last character)
+		unit := part[len(part)-1]
+		valueStr := part[:len(part)-1]
+
+		// Parse the numeric value
+		value := 0
+		for _, r := range valueStr {
+			if r >= '0' && r <= '9' {
+				value = value*10 + int(r-'0')
+			} else {
+				// Invalid format, skip this part
+				value = 0
+				break
+			}
+		}
+
+		// Convert to duration based on unit
+		switch unit {
+		case 's':
+			totalDuration += time.Duration(value) * time.Second
+		case 'm':
+			totalDuration += time.Duration(value) * time.Minute
+		case 'h':
+			totalDuration += time.Duration(value) * time.Hour
+		case 'd':
+			totalDuration += time.Duration(value) * 24 * time.Hour
+		case 'w':
+			totalDuration += time.Duration(value) * 7 * 24 * time.Hour
+		case 'M':
+			totalDuration += time.Duration(value) * 30 * 24 * time.Hour // 30 days
+		case 'y':
+			totalDuration += time.Duration(value) * 365 * 24 * time.Hour // 365 days
+		default:
+			// Invalid unit, skip this part
+			continue
 		}
 	}
 
-	switch unit {
-	case 's':
-		return time.Duration(value) * time.Second
-	case 'm':
-		return time.Duration(value) * time.Minute
-	case 'h':
-		return time.Duration(value) * time.Hour
-	case 'd':
-		return time.Duration(value) * 24 * time.Hour
-	case 'w':
-		return time.Duration(value) * 7 * 24 * time.Hour
-	case 'M':
-		return time.Duration(value) * 30 * 24 * time.Hour // 30 days
-	case 'y':
-		return time.Duration(value) * 365 * 24 * time.Hour // 365 days
-	default:
+	// If no valid parts were parsed, return default
+	if totalDuration == 0 {
 		return 15 * time.Second
 	}
+
+	return totalDuration
 }
 
 // ValidateDeviceConfig validates the device configuration
