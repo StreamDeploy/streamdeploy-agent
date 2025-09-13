@@ -20,6 +20,7 @@ type CoreAgent struct {
 	containerManager   types.ContainerManager
 	certificateManager types.CertificateManager
 	environmentManager types.EnvironmentManager
+	packageManager     types.PackageManager
 
 	// Control channels
 	ctx     context.Context
@@ -89,6 +90,11 @@ func (a *CoreAgent) SetCertificateManager(manager types.CertificateManager) {
 // SetEnvironmentManager sets the environment manager implementation
 func (a *CoreAgent) SetEnvironmentManager(manager types.EnvironmentManager) {
 	a.environmentManager = manager
+}
+
+// SetPackageManager sets the package manager implementation
+func (a *CoreAgent) SetPackageManager(manager types.PackageManager) {
+	a.packageManager = manager
 }
 
 // Start starts the core agent
@@ -447,6 +453,32 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 				} else {
 					a.logger.Info("System environment variables synchronized successfully")
 				}
+			}
+		}
+
+		// Sync system packages if package manager is available
+		if a.packageManager != nil {
+			oldPackages := []string{}
+			if currentState != nil {
+				oldPackages = currentState.Packages
+			}
+
+			if err := a.packageManager.SyncPackages(newState.Packages, oldPackages); err != nil {
+				a.logger.Errorf("Failed to sync system packages: %v", err)
+			} else {
+				a.logger.Info("System packages synchronized successfully")
+			}
+
+			// Sync custom packages
+			oldCustomPackages := make(map[string]types.CustomPackage)
+			if currentState != nil {
+				oldCustomPackages = currentState.CustomPackages
+			}
+
+			if err := a.packageManager.SyncCustomPackages(newState.CustomPackages, oldCustomPackages); err != nil {
+				a.logger.Errorf("Failed to sync custom packages: %v", err)
+			} else {
+				a.logger.Info("Custom packages synchronized successfully")
 			}
 		}
 

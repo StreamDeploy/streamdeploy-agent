@@ -8,16 +8,24 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/types"
 )
 
 // Collector implements the MetricsCollector interface for full Go
-type Collector struct{}
+type Collector struct {
+	// Sampling configuration
+	SampleCount    int           // Number of samples to take for averaging
+	SampleInterval time.Duration // Interval between samples
+}
 
-// NewCollector creates a new metrics collector
+// NewCollector creates a new metrics collector with default sampling settings
 func NewCollector() types.MetricsCollector {
-	return &Collector{}
+	return &Collector{
+		SampleCount:    3,                      // Take 3 samples
+		SampleInterval: 500 * time.Millisecond, // 500ms between samples
+	}
 }
 
 // CollectSystemMetrics collects system metrics (CPU, memory, disk usage)
@@ -26,21 +34,30 @@ func (c *Collector) CollectSystemMetrics() (*types.SystemMetrics, error) {
 		Custom: make(map[string]interface{}),
 	}
 
-	// Collect CPU usage
-	cpuPct, err := c.getCPUUsage()
+	// Collect CPU usage with sampling
+	cpuPct, err := c.getCPUUsageSampled()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get CPU usage: %w", err)
 	}
 	metrics.CPUPercent = cpuPct
 
-	// Collect memory usage
-	memPct, err := c.getMemoryUsage()
+	// Collect memory usage with sampling
+	memPct, err := c.getMemoryUsageSampled()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get memory usage: %w", err)
 	}
 	metrics.MemPercent = memPct
 
-	// Collect disk usage
+	// Collect swap usage (no sampling needed as it's typically stable)
+	swapPct, err := c.getSwapUsage()
+	if err != nil {
+		// Swap is optional, don't fail if it's not available
+		metrics.SwapPercent = 0
+	} else {
+		metrics.SwapPercent = swapPct
+	}
+
+	// Collect disk usage (no sampling needed as it's typically stable)
 	diskPct, err := c.getDiskUsage("/")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get disk usage: %w", err)
@@ -131,6 +148,7 @@ func (c *Collector) getCPUUsage() (float64, error) {
 	}
 
 	// Calculate CPU usage percentage
+	// idle includes both idle and iowait time (Linux considers both as idle)
 	totalDiff := stat2.total - stat1.total
 	idleDiff := stat2.idle - stat1.idle
 
@@ -140,6 +158,70 @@ func (c *Collector) getCPUUsage() (float64, error) {
 
 	cpuUsage := 100.0 * (1.0 - float64(idleDiff)/float64(totalDiff))
 	return cpuUsage, nil
+}
+
+// getCPUUsageSampled gets the average CPU usage over multiple samples
+func (c *Collector) getCPUUsageSampled() (float64, error) {
+	var totalUsage float64
+	var validSamples int
+
+	for i := 0; i < c.SampleCount; i++ {
+		usage, err := c.getCPUUsage()
+		if err != nil {
+			// If we get an error on the first sample, return it
+			if i == 0 {
+				return 0, err
+			}
+			// For subsequent samples, just skip this sample
+			continue
+		}
+
+		totalUsage += usage
+		validSamples++
+
+		// Don't sleep after the last sample
+		if i < c.SampleCount-1 {
+			time.Sleep(c.SampleInterval)
+		}
+	}
+
+	if validSamples == 0 {
+		return 0, fmt.Errorf("no valid CPU samples collected")
+	}
+
+	return totalUsage / float64(validSamples), nil
+}
+
+// getMemoryUsageSampled gets the average memory usage over multiple samples
+func (c *Collector) getMemoryUsageSampled() (float64, error) {
+	var totalUsage float64
+	var validSamples int
+
+	for i := 0; i < c.SampleCount; i++ {
+		usage, err := c.getMemoryUsage()
+		if err != nil {
+			// If we get an error on the first sample, return it
+			if i == 0 {
+				return 0, err
+			}
+			// For subsequent samples, just skip this sample
+			continue
+		}
+
+		totalUsage += usage
+		validSamples++
+
+		// Don't sleep after the last sample
+		if i < c.SampleCount-1 {
+			time.Sleep(c.SampleInterval)
+		}
+	}
+
+	if validSamples == 0 {
+		return 0, fmt.Errorf("no valid memory samples collected")
+	}
+
+	return totalUsage / float64(validSamples), nil
 }
 
 // cpuStat represents CPU statistics from /proc/stat
@@ -168,6 +250,7 @@ func (c *Collector) readCPUStat() (*cpuStat, error) {
 	}
 
 	// Parse CPU times: user, nice, system, idle, iowait, irq, softirq, steal
+	// Note: idle and iowait are both considered "idle" time in Linux
 	var times []uint64
 	for i := 1; i < len(fields) && i <= 8; i++ {
 		val, err := strconv.ParseUint(fields[i], 10, 64)
@@ -182,21 +265,116 @@ func (c *Collector) readCPUStat() (*cpuStat, error) {
 	}
 
 	// Calculate total and idle time
-	var total uint64
-	for _, time := range times {
-		total += time
+	// Linux considers both idle and iowait as idle for the classic formula
+	// This is important for devices like Raspberry Pi with SD card I/O
+	user := times[0]   // user
+	nice := times[1]   // nice
+	system := times[2] // system
+	idle := times[3]   // idle
+	iowait := times[4] // iowait (5th field, index 4)
+
+	// Calculate nonidle and idle_now
+	nonidle := user + nice + system
+	if len(times) > 4 {
+		// Add irq, softirq, steal if available
+		if len(times) > 5 {
+			nonidle += times[5] // irq
+		}
+		if len(times) > 6 {
+			nonidle += times[6] // softirq
+		}
+		if len(times) > 7 {
+			nonidle += times[7] // steal
+		}
 	}
 
-	idle := times[3] // idle time is the 4th field
+	idleNow := idle + iowait
+	total := idleNow + nonidle
 
 	return &cpuStat{
 		total: total,
-		idle:  idle,
+		idle:  idleNow,
 	}, nil
 }
 
 // getMemoryUsage gets the current memory usage percentage
 func (c *Collector) getMemoryUsage() (float64, error) {
+	// First try to get container memory if we're in a container
+	if containerMem, err := c.getContainerMemoryUsage(); err == nil {
+		return containerMem, nil
+	}
+
+	// Fall back to host memory via /proc/meminfo
+	return c.getHostMemoryUsage()
+}
+
+// getContainerMemoryUsage gets memory usage from cgroup v2 if available
+func (c *Collector) getContainerMemoryUsage() (float64, error) {
+	// Check if we're in a container by looking for cgroup v2 memory files
+	memoryCurrentPath := "/sys/fs/cgroup/memory.current"
+	memoryMaxPath := "/sys/fs/cgroup/memory.max"
+
+	// Check if cgroup v2 memory files exist
+	if _, err := os.Stat(memoryCurrentPath); os.IsNotExist(err) {
+		return 0, fmt.Errorf("not in container or cgroup v2 not available")
+	}
+	if _, err := os.Stat(memoryMaxPath); os.IsNotExist(err) {
+		return 0, fmt.Errorf("cgroup v2 memory.max not found")
+	}
+
+	// Read current memory usage
+	currentBytes, err := c.readCgroupValue(memoryCurrentPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read memory.current: %w", err)
+	}
+
+	// Read memory limit
+	maxBytes, err := c.readCgroupValue(memoryMaxPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read memory.max: %w", err)
+	}
+
+	// If max is "max" (no limit), we can't calculate percentage
+	if maxBytes == 0 {
+		return 0, fmt.Errorf("no memory limit set in container")
+	}
+
+	// Calculate percentage
+	usagePercent := 100.0 * float64(currentBytes) / float64(maxBytes)
+	return usagePercent, nil
+}
+
+// readCgroupValue reads a numeric value from a cgroup file
+func (c *Collector) readCgroupValue(path string) (uint64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	if !scanner.Scan() {
+		return 0, fmt.Errorf("empty file")
+	}
+
+	value := strings.TrimSpace(scanner.Text())
+
+	// Handle "max" value (no limit)
+	if value == "max" {
+		return 0, nil
+	}
+
+	// Parse as uint64
+	val, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse value: %w", err)
+	}
+
+	return val, nil
+}
+
+// getHostMemoryUsage gets memory usage from /proc/meminfo with fallback support
+func (c *Collector) getHostMemoryUsage() (float64, error) {
 	file, err := os.Open("/proc/meminfo")
 	if err != nil {
 		return 0, err
@@ -204,6 +382,7 @@ func (c *Collector) getMemoryUsage() (float64, error) {
 	defer file.Close()
 
 	var memTotal, memAvailable uint64
+	var memFree, buffers, cached, sReclaimable, shmem uint64
 	scanner := bufio.NewScanner(file)
 
 	for scanner.Scan() {
@@ -222,6 +401,26 @@ func (c *Collector) getMemoryUsage() (float64, error) {
 			if val, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
 				memAvailable = val
 			}
+		case "MemFree:":
+			if val, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
+				memFree = val
+			}
+		case "Buffers:":
+			if val, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
+				buffers = val
+			}
+		case "Cached:":
+			if val, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
+				cached = val
+			}
+		case "SReclaimable:":
+			if val, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
+				sReclaimable = val
+			}
+		case "Shmem:":
+			if val, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
+				shmem = val
+			}
 		}
 	}
 
@@ -229,10 +428,68 @@ func (c *Collector) getMemoryUsage() (float64, error) {
 		return 0, fmt.Errorf("failed to read memory total")
 	}
 
-	memUsed := memTotal - memAvailable
+	// Use modern MemAvailable if available (preferred method)
+	if memAvailable > 0 {
+		memUsed := memTotal - memAvailable
+		memUsagePercent := 100.0 * float64(memUsed) / float64(memTotal)
+		return memUsagePercent, nil
+	}
+
+	// Fallback for older kernels without MemAvailable
+	// approxAvailable = MemFree + Buffers + Cached + SReclaimable - Shmem
+	approxAvailable := memFree + buffers + cached + sReclaimable
+	if shmem > approxAvailable {
+		// Prevent underflow
+		approxAvailable = 0
+	} else {
+		approxAvailable -= shmem
+	}
+
+	memUsed := memTotal - approxAvailable
 	memUsagePercent := 100.0 * float64(memUsed) / float64(memTotal)
 
 	return memUsagePercent, nil
+}
+
+// getSwapUsage gets the swap usage percentage
+func (c *Collector) getSwapUsage() (float64, error) {
+	file, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	var swapTotal, swapFree uint64
+	scanner := bufio.NewScanner(file)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+
+		switch fields[0] {
+		case "SwapTotal:":
+			if val, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
+				swapTotal = val
+			}
+		case "SwapFree:":
+			if val, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
+				swapFree = val
+			}
+		}
+	}
+
+	// If no swap, return 0
+	if swapTotal == 0 {
+		return 0, nil
+	}
+
+	swapUsed := swapTotal - swapFree
+	swapUsagePercent := 100.0 * float64(swapUsed) / float64(swapTotal)
+
+	return swapUsagePercent, nil
 }
 
 // getDiskUsage gets the disk usage percentage for the specified path

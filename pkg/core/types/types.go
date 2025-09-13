@@ -67,6 +67,7 @@ type SystemMetrics struct {
 	CPUPercent  float64                `json:"cpu_pct"`
 	MemPercent  float64                `json:"mem_pct"`
 	DiskPercent float64                `json:"disk_pct"`
+	SwapPercent float64                `json:"swap_pct,omitempty"`
 	Custom      map[string]interface{} `json:"custom,omitempty"`
 }
 

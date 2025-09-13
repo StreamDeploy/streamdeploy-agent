@@ -23,6 +23,7 @@ import (
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/agent/environment"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/agent/https"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/agent/metrics"
+	"github.com/StreamDeploy/streamdeploy-agent/pkg/agent/packages"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/agent"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/types"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/utils"
@@ -139,6 +140,11 @@ func setupFullGoComponents(coreAgent *agent.CoreAgent, configPath string) error 
 	environmentManager := environment.NewManager(utils.NewLogger("ENV"))
 	coreAgent.SetEnvironmentManager(environmentManager)
 	logger.Info("Environment manager configured")
+
+	// Set up package manager
+	packageManager := packages.NewManager(utils.NewLogger("PACKAGE"))
+	coreAgent.SetPackageManager(packageManager)
+	logger.Info("Package manager configured")
 
 	// TODO: Set up MQTT client when implemented
 	// mqttClient, err := mqtt.NewClient(...)
