@@ -353,6 +353,7 @@ func (a *CoreAgent) sendHeartbeat() error {
 				"cpu_pct":  systemMetrics.CPUPercent,
 				"mem_pct":  systemMetrics.MemPercent,
 				"disk_pct": systemMetrics.DiskPercent,
+				"swap_pct": systemMetrics.SwapPercent,
 			}
 
 			// Add custom metrics

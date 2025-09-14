@@ -111,9 +111,9 @@ func (c *Collector) DetermineSystemStatus(cpuPct, memPct, diskPct float64, conta
 	// Define thresholds
 	const (
 		cpuWarningThreshold   = 80.0
-		cpuCriticalThreshold  = 95.0
+		cpuCriticalThreshold  = 90.0
 		memWarningThreshold   = 80.0
-		memCriticalThreshold  = 95.0
+		memCriticalThreshold  = 90.0
 		diskWarningThreshold  = 85.0
 		diskCriticalThreshold = 95.0
 	)
