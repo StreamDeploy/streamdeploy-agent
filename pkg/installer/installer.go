@@ -58,6 +58,7 @@ type DeviceConfig struct {
 	OSName             string         `json:"os_name"`
 	OSVersion          string         `json:"os_version"`
 	Architecture       string         `json:"architecture"`
+	MachineType        string         `json:"machine_type"`
 	PackageManager     PackageManager `json:"package_manager"`
 }
 
@@ -97,6 +98,7 @@ type Installer struct {
 	osName         string
 	osVersion      string
 	architecture   string
+	machineType    string
 	packageManager PackageManager
 }
 
@@ -285,8 +287,12 @@ func (i *Installer) detectSystem() error {
 	// Detect package manager
 	i.packageManager = i.detectPackageManager()
 
+	// Detect machine type
+	i.machineType = i.detectMachineType()
+
 	i.logger.Infof("Detected OS: %s %s", i.osName, i.osVersion)
 	i.logger.Infof("Architecture: %s", i.architecture)
+	i.logger.Infof("Machine Type: %s", i.machineType)
 	i.logger.Infof("Package Manager: %s", i.packageManager.Type)
 
 	return nil
@@ -313,6 +319,148 @@ func (i *Installer) detectARMVariant() string {
 
 	// Default to armv7 if we can't determine the specific variant
 	return "armv7"
+}
+
+func (i *Installer) detectMachineType() string {
+	// Try to detect from device tree first (NVIDIA Jetson devices)
+	if model, err := os.ReadFile("/sys/firmware/devicetree/base/model"); err == nil {
+		modelStr := strings.TrimSpace(string(model))
+		if strings.Contains(modelStr, "Jetson") {
+			i.logger.Infof("Detected NVIDIA device: %s", modelStr)
+			return modelStr
+		}
+		if strings.Contains(modelStr, "AGX Orin") || strings.Contains(modelStr, "Orin") {
+			return "NVIDIA Jetson AGX Orin"
+		}
+		if strings.Contains(modelStr, "Xavier") {
+			return "NVIDIA Jetson Xavier"
+		}
+		if strings.Contains(modelStr, "Nano") {
+			return "NVIDIA Jetson Nano"
+		}
+	}
+
+	// Try to detect Raspberry Pi from /proc/cpuinfo
+	if cpuInfo, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+		cpuInfoStr := string(cpuInfo)
+
+		// Check for Raspberry Pi indicators
+		if strings.Contains(cpuInfoStr, "Raspberry Pi") {
+			// Try to extract model from cpuinfo
+			lines := strings.Split(cpuInfoStr, "\n")
+			for _, line := range lines {
+				if strings.Contains(line, "Model") && strings.Contains(line, "Raspberry Pi") {
+					model := strings.TrimSpace(strings.Split(line, ":")[1])
+					i.logger.Infof("Detected Raspberry Pi: %s", model)
+					return model
+				}
+			}
+			return "Raspberry Pi"
+		}
+
+		// Check for other ARM-based single board computers
+		if strings.Contains(cpuInfoStr, "Hardware") {
+			lines := strings.Split(cpuInfoStr, "\n")
+			for _, line := range lines {
+				if strings.Contains(line, "Hardware") && strings.Contains(line, ":") {
+					hardware := strings.TrimSpace(strings.Split(line, ":")[1])
+					if strings.Contains(hardware, "ODROID") {
+						return "ODROID " + hardware
+					}
+					if strings.Contains(hardware, "Banana Pi") || strings.Contains(hardware, "BananaPro") {
+						return hardware
+					}
+					if strings.Contains(hardware, "Orange Pi") {
+						return hardware
+					}
+					if strings.Contains(hardware, "Rockchip") {
+						return "Rockchip " + hardware
+					}
+				}
+			}
+		}
+	}
+
+	// Check for RISC-V boards
+	if i.architecture == "riscv64" {
+		// Try to detect from device tree
+		if model, err := os.ReadFile("/sys/firmware/devicetree/base/model"); err == nil {
+			modelStr := strings.TrimSpace(string(model))
+			if strings.Contains(modelStr, "VisionFive") {
+				return "StarFive VisionFive"
+			}
+			if strings.Contains(modelStr, "HiFive") {
+				return "SiFive HiFive"
+			}
+			if strings.Contains(modelStr, "Pine64") || strings.Contains(modelStr, "Pine") {
+				return "Pine64 " + modelStr
+			}
+			if strings.Contains(modelStr, "Unmatched") {
+				return "SiFive HiFive Unmatched"
+			}
+			if strings.Contains(modelStr, "Allwinner") {
+				return "Allwinner RISC-V " + modelStr
+			}
+			return modelStr
+		}
+
+		// Check /proc/cpuinfo for RISC-V specific information
+		if cpuInfo, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+			cpuInfoStr := string(cpuInfo)
+			if strings.Contains(cpuInfoStr, "Hardware") {
+				lines := strings.Split(cpuInfoStr, "\n")
+				for _, line := range lines {
+					if strings.Contains(line, "Hardware") && strings.Contains(line, ":") {
+						hardware := strings.TrimSpace(strings.Split(line, ":")[1])
+						if strings.Contains(hardware, "VisionFive") {
+							return "StarFive VisionFive"
+						}
+						if strings.Contains(hardware, "HiFive") {
+							return "SiFive HiFive"
+						}
+						if strings.Contains(hardware, "Pine64") {
+							return "Pine64 " + hardware
+						}
+						if strings.Contains(hardware, "Unmatched") {
+							return "SiFive HiFive Unmatched"
+						}
+						if strings.Contains(hardware, "Allwinner") {
+							return "Allwinner RISC-V " + hardware
+						}
+					}
+				}
+			}
+		}
+
+		return "Generic RISC-V 64"
+	}
+
+	// Check for Intel NUC or other x86-based devices
+	if i.architecture == "amd64" || i.architecture == "x86_64" {
+		// Check if it's a virtual machine
+		if hypervisor, err := os.ReadFile("/sys/class/dmi/id/sys_vendor"); err == nil {
+			vendor := strings.TrimSpace(string(hypervisor))
+			if strings.Contains(vendor, "QEMU") || strings.Contains(vendor, "VMware") || strings.Contains(vendor, "VirtualBox") {
+				return "Virtual Machine (" + vendor + ")"
+			}
+		}
+
+		// Check for specific x86 devices
+		if product, err := os.ReadFile("/sys/class/dmi/id/product_name"); err == nil {
+			productStr := strings.TrimSpace(string(product))
+			if strings.Contains(productStr, "NUC") {
+				return "Intel NUC (" + productStr + ")"
+			}
+			if strings.Contains(productStr, "Raspberry Pi") {
+				return "Raspberry Pi (" + productStr + ")"
+			}
+		}
+
+		return "Generic x86_64"
+	}
+
+	// Default fallback
+	return "Unknown"
 }
 
 func (i *Installer) parseOSRelease() (map[string]string, error) {
@@ -505,6 +653,7 @@ func (i *Installer) createConfig() error {
 		OSName:             i.osName,
 		OSVersion:          i.osVersion,
 		Architecture:       i.architecture,
+		MachineType:        i.machineType,
 		PackageManager:     i.packageManager,
 	}
 
@@ -654,9 +803,13 @@ func (i *Installer) enrollCSR(nonce, csr string) (string, string, error) {
 	csrBase64 := base64.StdEncoding.EncodeToString([]byte(csr))
 
 	payload := map[string]string{
-		"token":      i.bootstrapToken,
-		"nonce":      nonce,
-		"csr_base64": csrBase64,
+		"token":        i.bootstrapToken,
+		"nonce":        nonce,
+		"csr_base64":   csrBase64,
+		"machine_type": i.machineType,
+		"architecture": i.architecture,
+		"os_name":      i.osName,
+		"os_version":   i.osVersion,
 	}
 
 	resp, err := i.httpPost(APIBase+"/v1-app/enroll/csr", payload)

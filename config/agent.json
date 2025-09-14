@@ -6,7 +6,8 @@
     "pki_dir": "/etc/streamdeploy/pki",
     "os_name": "ubuntu",
     "os_version": "22.04",
-    "architecture": "x86_64",
+    "architecture": "arm64",
+    "machine_type": "NVIDIA Jetson AGX Orin",
     "package_manager": {
         "type": "apt",
         "install_cmd": "apt-get install -y",
