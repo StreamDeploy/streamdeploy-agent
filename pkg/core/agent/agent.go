@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/config"
@@ -31,6 +34,17 @@ type CoreAgent struct {
 	heartbeatInterval        time.Duration
 	updateInterval           time.Duration
 	certificateCheckInterval time.Duration
+
+	// Update lock to prevent API calls during agent updates
+	updateLock sync.RWMutex
+	isUpdating bool
+
+	// Status update lock to prevent concurrent status updates
+	statusUpdateLock sync.Mutex
+
+	// Self-healing lock to prevent status updates during system state corrections
+	selfHealingLock sync.RWMutex
+	isSelfHealing   bool
 }
 
 // NewCoreAgent creates a new core agent instance
@@ -119,6 +133,7 @@ func (a *CoreAgent) Start() error {
 	go a.heartbeatLoop()
 	go a.updateLoop()
 	go a.certificateCheckLoop()
+	go a.agentUpdateLoop()
 
 	a.logger.Info("Core agent started successfully")
 	return nil
@@ -147,6 +162,67 @@ func (a *CoreAgent) IsRunning() bool {
 	return a.running
 }
 
+// SetUpdating sets the update lock to prevent API calls during agent updates
+func (a *CoreAgent) SetUpdating(updating bool) {
+	a.updateLock.Lock()
+	defer a.updateLock.Unlock()
+	a.isUpdating = updating
+	if updating {
+		a.logger.Info("Agent update started - API calls will be suspended")
+	} else {
+		a.logger.Info("Agent update completed - API calls resumed")
+	}
+}
+
+// IsUpdating returns whether the agent is currently updating
+func (a *CoreAgent) IsUpdating() bool {
+	a.updateLock.RLock()
+	defer a.updateLock.RUnlock()
+	return a.isUpdating
+}
+
+// SetSelfHealing sets the self-healing lock to prevent API calls during system state corrections
+func (a *CoreAgent) SetSelfHealing(healing bool) {
+	a.selfHealingLock.Lock()
+	defer a.selfHealingLock.Unlock()
+	a.isSelfHealing = healing
+	if healing {
+		a.logger.Info("Self-healing started - API calls will be suspended")
+	} else {
+		a.logger.Info("Self-healing completed - API calls resumed")
+	}
+}
+
+// IsSelfHealing returns whether the agent is currently performing self-healing
+func (a *CoreAgent) IsSelfHealing() bool {
+	a.selfHealingLock.RLock()
+	defer a.selfHealingLock.RUnlock()
+	return a.isSelfHealing
+}
+
+// CheckForAgentUpdate checks if the agent binary itself needs updating
+func (a *CoreAgent) CheckForAgentUpdate() error {
+	// This method can be called to check if the agent needs to update itself
+	// For now, we'll implement a simple check that can be extended
+	// In a real implementation, this would check for new agent versions
+
+	// Set updating flag to prevent API calls during self-update
+	a.SetUpdating(true)
+	defer a.SetUpdating(false)
+
+	a.logger.Info("Checking for agent self-update...")
+
+	// TODO: Implement actual agent update logic here
+	// This could involve:
+	// 1. Checking for new agent versions from the API
+	// 2. Downloading new agent binary
+	// 3. Replacing current binary
+	// 4. Restarting the agent service
+
+	a.logger.Info("Agent self-update check completed")
+	return nil
+}
+
 // heartbeatLoop runs the heartbeat loop
 func (a *CoreAgent) heartbeatLoop() {
 	a.logger.Infof("Heartbeat loop started with interval: %v", a.heartbeatInterval)
@@ -160,6 +236,11 @@ func (a *CoreAgent) heartbeatLoop() {
 			a.logger.Info("Heartbeat loop stopped")
 			return
 		case <-ticker.C:
+			// Skip heartbeat if agent is updating (but allow during self-healing)
+			if a.IsUpdating() {
+				a.logger.Info("Skipping heartbeat - agent is updating")
+				continue
+			}
 			if err := a.sendHeartbeat(); err != nil {
 				a.logger.Errorf("Heartbeat failed: %v", err)
 			}
@@ -180,8 +261,44 @@ func (a *CoreAgent) updateLoop() {
 			a.logger.Info("Update loop stopped")
 			return
 		case <-ticker.C:
+			// Skip update check if agent is updating or self-healing
+			if a.IsUpdating() {
+				a.logger.Info("Skipping update check - agent is updating")
+				continue
+			}
+			if a.IsSelfHealing() {
+				a.logger.Info("Skipping update check - agent is self-healing")
+				continue
+			}
 			if err := a.performUpdateCheck(); err != nil {
 				a.logger.Errorf("Update check failed: %v", err)
+			}
+		}
+	}
+}
+
+// agentUpdateLoop runs the agent self-update check loop
+func (a *CoreAgent) agentUpdateLoop() {
+	// Check for agent updates every hour
+	agentUpdateInterval := 1 * time.Hour
+	a.logger.Infof("Agent update loop started with interval: %v", agentUpdateInterval)
+
+	ticker := time.NewTicker(agentUpdateInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-a.ctx.Done():
+			a.logger.Info("Agent update loop stopped")
+			return
+		case <-ticker.C:
+			// Only check for agent updates if not already updating
+			if !a.IsUpdating() {
+				if err := a.CheckForAgentUpdate(); err != nil {
+					a.logger.Errorf("Agent update check failed: %v", err)
+				}
+			} else {
+				a.logger.Info("Skipping agent update check - already updating")
 			}
 		}
 	}
@@ -339,6 +456,10 @@ func (a *CoreAgent) sendHeartbeat() error {
 
 // performUpdateCheck performs an update check
 func (a *CoreAgent) performUpdateCheck() error {
+	// Lock to prevent concurrent status updates
+	a.statusUpdateLock.Lock()
+	defer a.statusUpdateLock.Unlock()
+
 	stateConfig := a.configManager.GetStateConfig()
 	if stateConfig == nil {
 		return fmt.Errorf("state config is nil")
@@ -354,17 +475,23 @@ func (a *CoreAgent) performUpdateCheck() error {
 	mode := a.configManager.GetMode()
 	deviceID := a.configManager.GetDeviceID()
 
+	var apiCallSuccessful bool
+	var apiError error
+
 	switch mode {
 	case "http", "https":
 		if a.httpClient == nil {
-			return fmt.Errorf("HTTP client not configured")
+			apiError = fmt.Errorf("HTTP client not configured")
+			break
 		}
 		response, err := a.httpClient.SendStatusUpdate(statusUpdate, deviceID)
 		if err != nil {
-			return fmt.Errorf("failed to send HTTP status update: %w", err)
+			apiError = fmt.Errorf("failed to send HTTP status update: %w", err)
+			break
 		}
 		if response.StatusCode >= 200 && response.StatusCode < 300 {
 			a.logger.Info("Status update sent successfully")
+			apiCallSuccessful = true
 
 			// Parse response for new state
 			if len(response.Body) > 0 {
@@ -373,25 +500,221 @@ func (a *CoreAgent) performUpdateCheck() error {
 				}
 			}
 		} else {
-			return fmt.Errorf("status update failed with status: %d", response.StatusCode)
+			apiError = fmt.Errorf("status update failed with status: %d", response.StatusCode)
 		}
 
 	case "mqtt":
 		if a.mqttClient == nil {
-			return fmt.Errorf("MQTT client not configured")
+			apiError = fmt.Errorf("MQTT client not configured")
+			break
 		}
 		if !a.mqttClient.IsConnected() {
 			if err := a.mqttClient.Connect(); err != nil {
-				return fmt.Errorf("failed to connect to MQTT: %w", err)
+				apiError = fmt.Errorf("failed to connect to MQTT: %w", err)
+				break
 			}
 		}
 		if err := a.mqttClient.PublishStatusUpdate(statusUpdate); err != nil {
-			return fmt.Errorf("failed to publish MQTT status update: %w", err)
+			apiError = fmt.Errorf("failed to publish MQTT status update: %w", err)
+			break
 		}
 		a.logger.Info("Status update published successfully")
+		apiCallSuccessful = true
 
 	default:
-		return fmt.Errorf("unsupported mode: %s", mode)
+		apiError = fmt.Errorf("unsupported mode: %s", mode)
+	}
+
+	// If API call failed, still perform local state check
+	if !apiCallSuccessful {
+		a.logger.Infof("API call failed (%v), performing local state check", apiError)
+		if err := a.performLocalStateCheck(); err != nil {
+			a.logger.Errorf("Local state check failed: %v", err)
+			// Return the original API error, not the local state check error
+			return apiError
+		}
+		a.logger.Info("Local state check completed successfully")
+	}
+
+	return apiError
+}
+
+// performLocalStateCheck performs a local state check when API calls fail
+func (a *CoreAgent) performLocalStateCheck() error {
+	a.logger.Info("Performing local state check...")
+
+	// Get current state from config manager (in-memory state)
+	currentState := a.configManager.GetStateConfig()
+	if currentState == nil {
+		return fmt.Errorf("current state config is nil")
+	}
+
+	// Check if actual system state matches the in-memory state
+	// and make corrections if needed
+	if err := a.verifyAndCorrectSystemState(currentState); err != nil {
+		return fmt.Errorf("failed to verify and correct system state: %w", err)
+	}
+
+	a.logger.Info("Local state check completed successfully")
+	return nil
+}
+
+// verifyAndCorrectSystemState verifies that the actual system state matches the in-memory state
+func (a *CoreAgent) verifyAndCorrectSystemState(state *types.StateConfig) error {
+	// Set self-healing flag to prevent API calls during system corrections
+	a.SetSelfHealing(true)
+	defer a.SetSelfHealing(false)
+
+	a.logger.Info("Verifying system state against in-memory configuration...")
+
+	// Verify containers
+	if err := a.verifyContainers(state); err != nil {
+		a.logger.Errorf("Container verification failed: %v", err)
+		// Continue with other verifications
+	}
+
+	// Verify packages
+	if err := a.verifyPackages(state); err != nil {
+		a.logger.Errorf("Package verification failed: %v", err)
+		// Continue with other verifications
+	}
+
+	// Verify environment variables
+	if err := a.verifyEnvironmentVariables(state); err != nil {
+		a.logger.Errorf("Environment variable verification failed: %v", err)
+		// Continue with other verifications
+	}
+
+	return nil
+}
+
+// verifyContainers checks if containers in the state are actually running
+func (a *CoreAgent) verifyContainers(state *types.StateConfig) error {
+	if a.containerManager == nil {
+		a.logger.Info("Container manager not available, skipping container verification")
+		return nil
+	}
+
+	if len(state.Containers) == 0 {
+		a.logger.Info("No containers configured, skipping container verification")
+		return nil
+	}
+
+	a.logger.Info("Verifying container state...")
+
+	// Check each container in the state
+	for _, containerConfig := range state.Containers {
+		containerName := containerConfig.Name
+
+		// Check if container is running
+		if !a.containerManager.IsContainerRunning(containerName) {
+			a.logger.Infof("Container %s is not running, attempting to start it...", containerName)
+
+			// Try to start the container
+			if err := a.containerManager.EnsureContainersRunning([]types.ContainerConfig{containerConfig}); err != nil {
+				a.logger.Errorf("Failed to start container %s: %v", containerName, err)
+				continue
+			}
+
+			a.logger.Infof("Container %s started successfully", containerName)
+		} else {
+			a.logger.Infof("Container %s is running", containerName)
+
+			// Perform health check
+			containerInfo := &types.ContainerInfo{
+				Name:       containerConfig.Name,
+				Image:      containerConfig.Image,
+				Port:       containerConfig.Port,
+				HealthPath: containerConfig.HealthPath,
+				Running:    true,
+			}
+
+			if !a.containerManager.PerformHealthCheck(containerInfo) {
+				a.logger.Infof("Health check failed for container %s", containerName)
+				// Could restart the container here if needed
+			}
+		}
+	}
+
+	return nil
+}
+
+// verifyPackages checks if packages in the state are actually installed
+func (a *CoreAgent) verifyPackages(state *types.StateConfig) error {
+	if a.packageManager == nil {
+		a.logger.Info("Package manager not available, skipping package verification")
+		return nil
+	}
+
+	if len(state.Packages) == 0 && len(state.CustomPackages) == 0 {
+		a.logger.Info("No packages configured, skipping package verification")
+		return nil
+	}
+
+	a.logger.Info("Verifying package state...")
+
+	// Ensure all packages are installed
+	if len(state.Packages) > 0 {
+		a.logger.Info("Ensuring system packages are installed...")
+		if err := a.packageManager.EnsurePackagesInstalled(state.Packages); err != nil {
+			a.logger.Errorf("Failed to ensure packages are installed: %v", err)
+		} else {
+			a.logger.Info("System packages verified successfully")
+		}
+	}
+
+	// Ensure all custom packages are installed
+	if len(state.CustomPackages) > 0 {
+		a.logger.Info("Ensuring custom packages are installed...")
+		if err := a.packageManager.EnsureCustomPackagesInstalled(state.CustomPackages); err != nil {
+			a.logger.Errorf("Failed to ensure custom packages are installed: %v", err)
+		} else {
+			a.logger.Info("Custom packages verified successfully")
+		}
+	}
+
+	return nil
+}
+
+// verifyEnvironmentVariables checks if environment variables in the state are actually set
+func (a *CoreAgent) verifyEnvironmentVariables(state *types.StateConfig) error {
+	if a.environmentManager == nil {
+		a.logger.Info("Environment manager not available, skipping environment variable verification")
+		return nil
+	}
+
+	if len(state.Env) == 0 {
+		a.logger.Info("No environment variables configured, skipping environment variable verification")
+		return nil
+	}
+
+	a.logger.Info("Verifying environment variable state...")
+
+	// Get current system environment
+	currentEnv, err := a.environmentManager.GetCurrentSystemEnvironment()
+	if err != nil {
+		return fmt.Errorf("failed to get current system environment: %w", err)
+	}
+
+	// Check if environment variables match
+	needsUpdate := false
+	for key, expectedValue := range state.Env {
+		if currentValue, exists := currentEnv[key]; !exists || currentValue != expectedValue {
+			a.logger.Infof("Environment variable %s mismatch (expected: %s, current: %s)",
+				key, expectedValue, currentValue)
+			needsUpdate = true
+		}
+	}
+
+	// If there are mismatches, sync the environment
+	if needsUpdate {
+		a.logger.Info("Environment variables need updating, syncing...")
+		if err := a.environmentManager.SyncSystemEnvironment(state.Env); err != nil {
+			return fmt.Errorf("failed to sync environment variables: %w", err)
+		}
+		a.logger.Info("Environment variables synced successfully")
+	} else {
+		a.logger.Info("Environment variables are correctly set")
 	}
 
 	return nil
@@ -424,6 +747,10 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 	currentState := a.configManager.GetStateConfig()
 	if !stateConfigsEqual(currentState, &newState) {
 		a.logger.Info("Received new state configuration")
+
+		// Set self-healing flag to prevent API calls during state synchronization
+		a.SetSelfHealing(true)
+		defer a.SetSelfHealing(false)
 
 		// Sync containers if container manager is available
 		if a.containerManager != nil {
@@ -544,11 +871,216 @@ func (a *CoreAgent) performCertificateCheck() error {
 func (a *CoreAgent) handleConfigChange(filePath string) {
 	a.logger.Infof("Configuration changed: %s", filePath)
 
+	// Check if this is an error case
+	isError := strings.HasSuffix(filePath, ":error")
+	if isError {
+		// Remove the error suffix to get the actual file path
+		filePath = strings.TrimSuffix(filePath, ":error")
+	}
+
+	// Determine which config file changed
+	if strings.HasSuffix(filePath, "agent.json") {
+		a.handleDeviceConfigChange(isError)
+	} else if strings.HasSuffix(filePath, "state.json") {
+		a.handleStateConfigChange(isError)
+	}
+
+	a.logger.Info("Configuration reloaded successfully")
+}
+
+// handleDeviceConfigChange handles device configuration changes
+func (a *CoreAgent) handleDeviceConfigChange(isError bool) {
+	if isError {
+		a.logger.Errorf("Failed to parse agent.json, resetting with default configuration from memory...")
+		// Reset agent.json with default configuration
+		if err := a.resetAgentConfigToDefault(); err != nil {
+			a.logger.Errorf("Failed to reset agent.json: %v", err)
+		} else {
+			a.logger.Info("agent.json reset to default configuration successfully")
+		}
+		return
+	}
+
+	a.logger.Info("Device configuration changed, updating timing intervals...")
+
 	// Update timing intervals
+	oldUpdateInterval := a.updateInterval
 	a.heartbeatInterval = a.configManager.GetHeartbeatFrequency()
 	a.updateInterval = a.configManager.GetUpdateFrequency()
 
-	a.logger.Info("Configuration reloaded successfully")
+	// Restart file monitoring if update frequency changed
+	if oldUpdateInterval != a.updateInterval {
+		a.logger.Infof("Update frequency changed from %v to %v, restarting file monitoring", oldUpdateInterval, a.updateInterval)
+		a.configManager.RestartMonitoring()
+	}
+
+	a.logger.Info("Device configuration updated successfully")
+}
+
+// handleStateConfigChange handles state configuration changes
+func (a *CoreAgent) handleStateConfigChange(isError bool) {
+	if isError {
+		a.logger.Errorf("Failed to parse state.json, saving memory state back to file...")
+		// Save current in-memory state back to state.json
+		if err := a.configManager.SaveStateConfig(); err != nil {
+			a.logger.Errorf("Failed to save state config back to file: %v", err)
+		} else {
+			a.logger.Info("Memory state saved back to state.json successfully")
+		}
+		return
+	}
+
+	// Check if agent is currently updating
+	if a.IsUpdating() {
+		a.logger.Info("Agent is currently updating, waiting for update to complete before applying file changes...")
+		// Wait for update to complete
+		go a.waitForUpdateAndApplyStateChange()
+		return
+	}
+
+	a.logger.Info("State configuration changed, applying changes...")
+
+	// Get the new state configuration (already loaded by the config manager)
+	newState := a.configManager.GetStateConfig()
+	if newState == nil {
+		a.logger.Errorf("Failed to get new state configuration")
+		return
+	}
+
+	// Apply the changes using the same logic as API responses
+	// We pass nil as oldState since we want to apply all changes
+	if err := a.applyStateChanges(nil, newState); err != nil {
+		a.logger.Errorf("Failed to apply state changes: %v", err)
+		return
+	}
+
+	a.logger.Info("State changes applied successfully")
+}
+
+// resetAgentConfigToDefault resets agent.json with the current device configuration from memory
+func (a *CoreAgent) resetAgentConfigToDefault() error {
+	// Get the current device configuration from memory
+	deviceConfig := a.configManager.GetDeviceConfig()
+	if deviceConfig == nil {
+		return fmt.Errorf("no device configuration available in memory")
+	}
+
+	// Get the device config path
+	deviceConfigPath := a.configManager.GetDeviceConfigPath()
+	if deviceConfigPath == "" {
+		return fmt.Errorf("device config path not available")
+	}
+
+	// Write the current device config back to the file
+	data, err := json.MarshalIndent(deviceConfig, "", "    ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal device config: %w", err)
+	}
+
+	if err := os.WriteFile(deviceConfigPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write device config file: %w", err)
+	}
+
+	a.logger.Info("agent.json reset with current device configuration from memory")
+	return nil
+}
+
+// waitForUpdateAndApplyStateChange waits for update to complete and then applies state change
+func (a *CoreAgent) waitForUpdateAndApplyStateChange() {
+	a.logger.Info("Waiting for update to complete...")
+
+	// Poll until update is complete
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	timeout := time.After(5 * time.Minute) // 5 minute timeout
+
+	for {
+		select {
+		case <-ticker.C:
+			if !a.IsUpdating() {
+				a.logger.Info("Update completed, applying state change...")
+				// Apply the state change now that update is complete
+				a.handleStateConfigChange(false)
+				return
+			}
+		case <-timeout:
+			a.logger.Errorf("Timeout waiting for update to complete, applying state change anyway...")
+			a.handleStateConfigChange(false)
+			return
+		}
+	}
+}
+
+// applyStateChanges applies state changes from old state to new state
+func (a *CoreAgent) applyStateChanges(oldState, newState *types.StateConfig) error {
+	// Set self-healing flag to prevent API calls during state changes
+	a.SetSelfHealing(true)
+	defer a.SetSelfHealing(false)
+
+	// Sync containers if container manager is available
+	if a.containerManager != nil {
+		oldContainers := []types.ContainerConfig{}
+		if oldState != nil {
+			oldContainers = oldState.Containers
+		}
+
+		if err := a.containerManager.SyncContainers(newState.Containers, oldContainers); err != nil {
+			a.logger.Errorf("Failed to sync containers: %v", err)
+		} else {
+			a.logger.Info("Containers synchronized successfully")
+		}
+	}
+
+	// Sync system environment variables if environment manager is available
+	if a.environmentManager != nil {
+		oldEnv := make(map[string]string)
+		if oldState != nil {
+			oldEnv = oldState.Env
+		}
+
+		// Check if environment variables have changed
+		if !envMapsEqual(oldEnv, newState.Env) {
+			if err := a.syncEnvironmentVariables(oldEnv, newState.Env); err != nil {
+				a.logger.Errorf("Failed to sync system environment variables: %v", err)
+			} else {
+				a.logger.Info("System environment variables synchronized successfully")
+			}
+		}
+	}
+
+	// Sync system packages if package manager is available
+	if a.packageManager != nil {
+		oldPackages := []string{}
+		if oldState != nil {
+			oldPackages = oldState.Packages
+		}
+
+		if err := a.packageManager.SyncPackages(newState.Packages, oldPackages); err != nil {
+			a.logger.Errorf("Failed to sync system packages: %v", err)
+		} else {
+			a.logger.Info("System packages synchronized successfully")
+		}
+
+		// Sync custom packages
+		oldCustomPackages := make(map[string]types.CustomPackage)
+		if oldState != nil {
+			oldCustomPackages = oldState.CustomPackages
+		}
+
+		if err := a.packageManager.SyncCustomPackages(newState.CustomPackages, oldCustomPackages); err != nil {
+			a.logger.Errorf("Failed to sync custom packages: %v", err)
+		} else {
+			a.logger.Info("Custom packages synchronized successfully")
+		}
+	}
+
+	// Update the state config in memory
+	if err := a.configManager.UpdateStateConfig(newState); err != nil {
+		return fmt.Errorf("failed to update state config: %w", err)
+	}
+
+	return nil
 }
 
 // stateConfigsEqual compares two state configurations for equality

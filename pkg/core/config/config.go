@@ -13,11 +13,14 @@ import (
 
 // Manager implements the ConfigManager
 type Manager struct {
-	deviceConfigPath string
-	stateConfigPath  string
-	deviceConfig     *types.DeviceConfig
-	stateConfig      *types.StateConfig
-	changeCallback   func(string)
+	deviceConfigPath  string
+	stateConfigPath   string
+	deviceConfig      *types.DeviceConfig
+	stateConfig       *types.StateConfig
+	changeCallback    func(string)
+	monitoring        bool
+	stopMonitoring    chan bool
+	restartMonitoring chan bool
 }
 
 // NewManager creates a new configuration manager
@@ -41,6 +44,11 @@ func NewManager(deviceConfigPath string) (*Manager, error) {
 // GetDeviceConfig returns the device configuration
 func (m *Manager) GetDeviceConfig() *types.DeviceConfig {
 	return m.deviceConfig
+}
+
+// GetDeviceConfigPath returns the device configuration file path
+func (m *Manager) GetDeviceConfigPath() string {
+	return m.deviceConfigPath
 }
 
 // GetStateConfig returns the state configuration
@@ -70,18 +78,50 @@ func (m *Manager) SaveStateConfig() error {
 
 // StartMonitoring starts monitoring configuration files for changes
 func (m *Manager) StartMonitoring() error {
-	// TODO: Implement file system monitoring
+	if m.monitoring {
+		return nil // Already monitoring
+	}
+
+	m.monitoring = true
+	m.stopMonitoring = make(chan bool)
+	m.restartMonitoring = make(chan bool)
+
+	// Start monitoring goroutine with polling
+	go m.monitorFiles()
+
 	return nil
 }
 
 // StopMonitoring stops monitoring configuration files
 func (m *Manager) StopMonitoring() {
+	if !m.monitoring || m.stopMonitoring == nil {
+		return
+	}
 
+	m.monitoring = false
+	close(m.stopMonitoring)
+	m.stopMonitoring = nil
+	if m.restartMonitoring != nil {
+		close(m.restartMonitoring)
+		m.restartMonitoring = nil
+	}
 }
 
 // SetConfigChangeCallback sets the callback for configuration changes
 func (m *Manager) SetConfigChangeCallback(callback func(string)) {
 	m.changeCallback = callback
+}
+
+// RestartMonitoring restarts the file monitoring with the current update frequency
+func (m *Manager) RestartMonitoring() {
+	if m.monitoring && m.restartMonitoring != nil {
+		select {
+		case m.restartMonitoring <- true:
+			// Signal sent successfully
+		default:
+			// Channel is full or closed, ignore
+		}
+	}
 }
 
 // GetDeviceID returns the device ID
@@ -114,6 +154,11 @@ func (m *Manager) GetUpdateFrequency() time.Duration {
 		return 30 * time.Second
 	}
 	return ParseFrequencyToDuration(m.stateConfig.AgentSetting.UpdateFrequency)
+}
+
+// ReloadStateConfig reloads the state configuration from file
+func (m *Manager) ReloadStateConfig() error {
+	return m.loadStateConfig()
 }
 
 // GetPKIDir returns the PKI directory path
@@ -353,4 +398,96 @@ func ValidateStateConfig(config *types.StateConfig) error {
 	}
 
 	return nil
+}
+
+// monitorFiles monitors configuration files for changes using polling
+func (m *Manager) monitorFiles() {
+	var ticker *time.Ticker
+
+	// Initialize with current update frequency
+	pollInterval := m.GetUpdateFrequency()
+	if pollInterval <= 0 {
+		pollInterval = 30 * time.Second // Default fallback
+	}
+
+	ticker = time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	// Track file modification times
+	deviceConfigModTime := m.getFileModTime(m.deviceConfigPath)
+	stateConfigModTime := m.getFileModTime(m.stateConfigPath)
+
+	for {
+		select {
+		case <-ticker.C:
+			// Check device config
+			if newModTime := m.getFileModTime(m.deviceConfigPath); newModTime.After(deviceConfigModTime) {
+				deviceConfigModTime = newModTime
+				m.handleDeviceConfigChange()
+			}
+
+			// Check state config
+			if newModTime := m.getFileModTime(m.stateConfigPath); newModTime.After(stateConfigModTime) {
+				stateConfigModTime = newModTime
+				m.handleStateConfigChange()
+			}
+
+		case <-m.restartMonitoring:
+			// Restart with new interval
+			ticker.Stop()
+			newInterval := m.GetUpdateFrequency()
+			if newInterval <= 0 {
+				newInterval = 30 * time.Second // Default fallback
+			}
+			ticker = time.NewTicker(newInterval)
+
+		case <-m.stopMonitoring:
+			return
+		}
+	}
+}
+
+// getFileModTime gets the modification time of a file
+func (m *Manager) getFileModTime(filePath string) time.Time {
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return time.Time{} // Return zero time if file doesn't exist or can't be read
+	}
+	return info.ModTime()
+}
+
+// handleDeviceConfigChange handles device configuration file changes
+func (m *Manager) handleDeviceConfigChange() {
+	// Reload device config
+	if err := m.loadDeviceConfig(); err != nil {
+		fmt.Printf("Failed to reload device config: %v\n", err)
+		// Notify callback with error so agent can handle it
+		if m.changeCallback != nil {
+			m.changeCallback(m.deviceConfigPath + ":error")
+		}
+		return
+	}
+
+	// Notify callback
+	if m.changeCallback != nil {
+		m.changeCallback(m.deviceConfigPath)
+	}
+}
+
+// handleStateConfigChange handles state configuration file changes
+func (m *Manager) handleStateConfigChange() {
+	// Reload state config
+	if err := m.loadStateConfig(); err != nil {
+		fmt.Printf("Failed to reload state config: %v\n", err)
+		// Notify callback with error so agent can handle it
+		if m.changeCallback != nil {
+			m.changeCallback(m.stateConfigPath + ":error")
+		}
+		return
+	}
+
+	// Notify callback
+	if m.changeCallback != nil {
+		m.changeCallback(m.stateConfigPath)
+	}
 }

@@ -130,6 +130,9 @@ type ConfigManager interface {
 	GetDeviceID() string
 	GetHeartbeatFrequency() time.Duration
 	GetUpdateFrequency() time.Duration
+	ReloadStateConfig() error
+	GetDeviceConfigPath() string
+	RestartMonitoring()
 }
 
 // MetricsCollector interface for metrics collection
