@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +13,23 @@ import (
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/config"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/types"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/utils"
+)
+
+// SelfHealingResult tracks the results of self-healing operations
+type SelfHealingResult struct {
+	Success     bool              `json:"success"`
+	Errors      map[string]string `json:"errors,omitempty"` // task_name -> error_message
+	TriggeredBy string            `json:"triggered_by"`     // "api" or "local"
+}
+
+// SelfHealingTask represents a specific self-healing task
+type SelfHealingTask string
+
+const (
+	TaskContainers     SelfHealingTask = "containers"
+	TaskPackages       SelfHealingTask = "packages"
+	TaskCustomPackages SelfHealingTask = "custom_packages"
+	TaskEnvironment    SelfHealingTask = "environment"
 )
 
 type CoreAgent struct {
@@ -45,6 +63,9 @@ type CoreAgent struct {
 	// Self-healing lock to prevent status updates during system state corrections
 	selfHealingLock sync.RWMutex
 	isSelfHealing   bool
+
+	// Self-healing result tracking
+	selfHealingResult *SelfHealingResult
 }
 
 // NewCoreAgent creates a new core agent instance
@@ -562,28 +583,64 @@ func (a *CoreAgent) performLocalStateCheck() error {
 
 // verifyAndCorrectSystemState verifies that the actual system state matches the in-memory state
 func (a *CoreAgent) verifyAndCorrectSystemState(state *types.StateConfig) error {
+	return a.verifyAndCorrectSystemStateWithFeedback(state, "local")
+}
+
+// verifyAndCorrectSystemStateWithFeedback verifies system state and sends feedback
+func (a *CoreAgent) verifyAndCorrectSystemStateWithFeedback(state *types.StateConfig, triggeredBy string) error {
 	// Set self-healing flag to prevent API calls during system corrections
 	a.SetSelfHealing(true)
 	defer a.SetSelfHealing(false)
+
+	// Initialize self-healing result tracking
+	result := &SelfHealingResult{
+		Success:     true,
+		Errors:      make(map[string]string),
+		TriggeredBy: triggeredBy,
+	}
+	a.selfHealingResult = result
 
 	a.logger.Info("Verifying system state against in-memory configuration...")
 
 	// Verify containers
 	if err := a.verifyContainers(state); err != nil {
 		a.logger.Errorf("Container verification failed: %v", err)
+		result.Success = false
+		result.Errors[string(TaskContainers)] = err.Error()
 		// Continue with other verifications
 	}
 
 	// Verify packages
 	if err := a.verifyPackages(state); err != nil {
 		a.logger.Errorf("Package verification failed: %v", err)
+		result.Success = false
+		result.Errors[string(TaskPackages)] = err.Error()
+		// Continue with other verifications
+	}
+
+	// Verify custom packages
+	if err := a.verifyCustomPackages(state); err != nil {
+		a.logger.Errorf("Custom package verification failed: %v", err)
+		result.Success = false
+		result.Errors[string(TaskCustomPackages)] = err.Error()
 		// Continue with other verifications
 	}
 
 	// Verify environment variables
 	if err := a.verifyEnvironmentVariables(state); err != nil {
 		a.logger.Errorf("Environment variable verification failed: %v", err)
+		result.Success = false
+		result.Errors[string(TaskEnvironment)] = err.Error()
 		// Continue with other verifications
+	}
+
+	// Send feedback based on trigger source
+	if triggeredBy == "api" {
+		// Always send feedback when triggered by API
+		a.sendSelfHealingFeedback(result)
+	} else {
+		// For local self-healing, send feedback for both success and failure
+		a.sendSelfHealingFeedback(result)
 	}
 
 	return nil
@@ -677,6 +734,31 @@ func (a *CoreAgent) verifyPackages(state *types.StateConfig) error {
 	return nil
 }
 
+// verifyCustomPackages checks if custom packages in the state are actually installed
+func (a *CoreAgent) verifyCustomPackages(state *types.StateConfig) error {
+	if a.packageManager == nil {
+		a.logger.Info("Package manager not available, skipping custom package verification")
+		return nil
+	}
+
+	if len(state.CustomPackages) == 0 {
+		a.logger.Info("No custom packages configured, skipping custom package verification")
+		return nil
+	}
+
+	a.logger.Info("Verifying custom package state...")
+
+	// Ensure all custom packages are installed
+	a.logger.Info("Ensuring custom packages are installed...")
+	if err := a.packageManager.EnsureCustomPackagesInstalled(state.CustomPackages); err != nil {
+		a.logger.Errorf("Failed to ensure custom packages are installed: %v", err)
+		return err
+	}
+
+	a.logger.Info("Custom packages verified successfully")
+	return nil
+}
+
 // verifyEnvironmentVariables checks if environment variables in the state are actually set
 func (a *CoreAgent) verifyEnvironmentVariables(state *types.StateConfig) error {
 	if a.environmentManager == nil {
@@ -728,6 +810,18 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 
+	// Handle temporary command if present
+	if tmpCmd, exists := response["tmp"]; exists {
+		a.logger.Info("Received temporary command")
+		if err := a.executeTemporaryCommand(tmpCmd); err != nil {
+			a.logger.Errorf("Failed to execute temporary command: %v", err)
+			// Continue processing other response data even if tmp command fails
+		}
+		// Remove tmp key from response to prevent it from being saved to state
+		delete(response, "tmp")
+		a.logger.Info("Temporary command executed and removed from memory")
+	}
+
 	newStateData, exists := response["new_state"]
 	if !exists {
 		return nil // No new state
@@ -749,75 +843,224 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 	if !stateConfigsEqual(currentState, &newState) {
 		a.logger.Info("Received new state configuration")
 
-		// Set self-healing flag to prevent API calls during state synchronization
-		a.SetSelfHealing(true)
-		defer a.SetSelfHealing(false)
-
-		// Sync containers if container manager is available
-		if a.containerManager != nil {
-			oldContainers := []types.ContainerConfig{}
-			if currentState != nil {
-				oldContainers = currentState.Containers
-			}
-
-			if err := a.containerManager.SyncContainers(newState.Containers, oldContainers); err != nil {
-				a.logger.Errorf("Failed to sync containers: %v", err)
-			} else {
-				a.logger.Info("Containers synchronized successfully")
-			}
+		// Apply state changes with feedback tracking
+		if err := a.applyStateChangesWithFeedback(currentState, &newState, "api"); err != nil {
+			a.logger.Errorf("Failed to apply state changes: %v", err)
 		}
-
-		// Sync system environment variables if environment manager is available
-		if a.environmentManager != nil {
-			oldEnv := make(map[string]string)
-			if currentState != nil {
-				oldEnv = currentState.Env
-			}
-
-			// Check if environment variables have changed
-			if !envMapsEqual(oldEnv, newState.Env) {
-				if err := a.syncEnvironmentVariables(oldEnv, newState.Env); err != nil {
-					a.logger.Errorf("Failed to sync system environment variables: %v", err)
-				} else {
-					a.logger.Info("System environment variables synchronized successfully")
-				}
-			}
-		}
-
-		// Sync system packages if package manager is available
-		if a.packageManager != nil {
-			oldPackages := []string{}
-			if currentState != nil {
-				oldPackages = currentState.Packages
-			}
-
-			if err := a.packageManager.SyncPackages(newState.Packages, oldPackages); err != nil {
-				a.logger.Errorf("Failed to sync system packages: %v", err)
-			} else {
-				a.logger.Info("System packages synchronized successfully")
-			}
-
-			// Sync custom packages
-			oldCustomPackages := make(map[string]types.CustomPackage)
-			if currentState != nil {
-				oldCustomPackages = currentState.CustomPackages
-			}
-
-			if err := a.packageManager.SyncCustomPackages(newState.CustomPackages, oldCustomPackages); err != nil {
-				a.logger.Errorf("Failed to sync custom packages: %v", err)
-			} else {
-				a.logger.Info("Custom packages synchronized successfully")
-			}
-		}
-
-		if err := a.configManager.UpdateStateConfig(&newState); err != nil {
-			return fmt.Errorf("failed to update state config: %w", err)
-		}
-
-		a.logger.Info("State configuration updated")
 	}
 
 	return nil
+}
+
+// applyStateChangesWithFeedback applies state changes with feedback tracking
+func (a *CoreAgent) applyStateChangesWithFeedback(oldState, newState *types.StateConfig, triggeredBy string) error {
+	// Set self-healing flag to prevent API calls during state changes
+	a.SetSelfHealing(true)
+	defer a.SetSelfHealing(false)
+
+	// Initialize self-healing result tracking
+	result := &SelfHealingResult{
+		Success:     true,
+		Errors:      make(map[string]string),
+		TriggeredBy: triggeredBy,
+	}
+	a.selfHealingResult = result
+
+	// Sync containers if container manager is available
+	if a.containerManager != nil {
+		oldContainers := []types.ContainerConfig{}
+		if oldState != nil {
+			oldContainers = oldState.Containers
+		}
+
+		if err := a.containerManager.SyncContainers(newState.Containers, oldContainers); err != nil {
+			a.logger.Errorf("Failed to sync containers: %v", err)
+			result.Success = false
+			result.Errors[string(TaskContainers)] = err.Error()
+		} else {
+			a.logger.Info("Containers synchronized successfully")
+		}
+	}
+
+	// Sync system environment variables if environment manager is available
+	if a.environmentManager != nil {
+		oldEnv := make(map[string]string)
+		if oldState != nil {
+			oldEnv = oldState.Env
+		}
+
+		// Check if environment variables have changed
+		if !envMapsEqual(oldEnv, newState.Env) {
+			if err := a.syncEnvironmentVariables(oldEnv, newState.Env); err != nil {
+				a.logger.Errorf("Failed to sync system environment variables: %v", err)
+				result.Success = false
+				result.Errors[string(TaskEnvironment)] = err.Error()
+			} else {
+				a.logger.Info("System environment variables synchronized successfully")
+			}
+		}
+	}
+
+	// Sync system packages if package manager is available
+	if a.packageManager != nil {
+		oldPackages := []string{}
+		if oldState != nil {
+			oldPackages = oldState.Packages
+		}
+
+		if err := a.packageManager.SyncPackages(newState.Packages, oldPackages); err != nil {
+			a.logger.Errorf("Failed to sync system packages: %v", err)
+			result.Success = false
+			result.Errors[string(TaskPackages)] = err.Error()
+		} else {
+			a.logger.Info("System packages synchronized successfully")
+		}
+
+		// Sync custom packages
+		oldCustomPackages := make(map[string]types.CustomPackage)
+		if oldState != nil {
+			oldCustomPackages = oldState.CustomPackages
+		}
+
+		if err := a.packageManager.SyncCustomPackages(newState.CustomPackages, oldCustomPackages); err != nil {
+			a.logger.Errorf("Failed to sync custom packages: %v", err)
+			result.Success = false
+			result.Errors[string(TaskCustomPackages)] = err.Error()
+		} else {
+			a.logger.Info("Custom packages synchronized successfully")
+		}
+	}
+
+	// Update state configuration
+	if err := a.configManager.UpdateStateConfig(newState); err != nil {
+		result.Success = false
+		result.Errors["state_config"] = err.Error()
+		return fmt.Errorf("failed to update state config: %w", err)
+	}
+
+	a.logger.Info("State configuration updated")
+
+	// Send feedback based on trigger source
+	if triggeredBy == "api" {
+		// Always send feedback when triggered by API
+		a.sendSelfHealingFeedback(result)
+	} else {
+		// For local self-healing, send feedback for both success and failure
+		a.sendSelfHealingFeedback(result)
+	}
+
+	return nil
+}
+
+// executeTemporaryCommand executes a temporary command from the tmp key
+func (a *CoreAgent) executeTemporaryCommand(tmpCmd interface{}) error {
+	// Convert tmpCmd to string
+	command, ok := tmpCmd.(string)
+	if !ok {
+		return fmt.Errorf("tmp command must be a string, got %T", tmpCmd)
+	}
+
+	if command == "" {
+		a.logger.Info("Empty temporary command, skipping execution")
+		return nil
+	}
+
+	a.logger.Infof("Executing temporary command: %s", command)
+
+	// Set a timeout for command execution (5 minutes)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// Execute the command with timeout
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		a.logger.Errorf("Temporary command failed: %v", err)
+		a.logger.Errorf("Command output: %s", string(output))
+		return fmt.Errorf("command execution failed: %w", err)
+	}
+
+	a.logger.Infof("Temporary command executed successfully")
+	if len(output) > 0 {
+		a.logger.Infof("Command output: %s", string(output))
+	}
+
+	return nil
+}
+
+// sendSelfHealingFeedback sends feedback about self-healing results to the server
+func (a *CoreAgent) sendSelfHealingFeedback(result *SelfHealingResult) {
+	if result == nil {
+		return
+	}
+
+	// Determine status based on result
+	var status string
+
+	if result.Success {
+		status = "update_completed"
+	} else {
+		status = "update_failed"
+	}
+
+	// Build status update payload
+	statusUpdate := &types.StatusUpdatePayload{
+		UpdateType: status,
+	}
+
+	// Set CurrentState based on the result
+	if result.Success {
+		// Empty state on success
+		statusUpdate.CurrentState = types.StateConfig{}
+	} else {
+		// For error cases, send current state from config manager
+		// Error details will be logged for debugging
+		statusUpdate.CurrentState = *a.configManager.GetStateConfig()
+		a.logger.Errorf("Self-healing errors: %v", result.Errors)
+	}
+
+	// Send status update based on mode
+	mode := a.configManager.GetMode()
+	deviceID := a.configManager.GetDeviceID()
+
+	switch mode {
+	case "http", "https":
+		if a.httpClient == nil {
+			a.logger.Errorf("HTTP client not configured, cannot send self-healing feedback")
+			return
+		}
+		response, err := a.httpClient.SendStatusUpdate(statusUpdate, deviceID)
+		if err != nil {
+			a.logger.Errorf("Failed to send self-healing feedback: %v", err)
+			return
+		}
+		if response.StatusCode >= 200 && response.StatusCode < 300 {
+			a.logger.Infof("Self-healing feedback sent successfully: %s", status)
+		} else {
+			a.logger.Errorf("Self-healing feedback failed with status: %d", response.StatusCode)
+		}
+
+	case "mqtt":
+		if a.mqttClient == nil {
+			a.logger.Errorf("MQTT client not configured, cannot send self-healing feedback")
+			return
+		}
+		if !a.mqttClient.IsConnected() {
+			if err := a.mqttClient.Connect(); err != nil {
+				a.logger.Errorf("Failed to connect to MQTT for self-healing feedback: %v", err)
+				return
+			}
+		}
+		if err := a.mqttClient.PublishStatusUpdate(statusUpdate); err != nil {
+			a.logger.Errorf("Failed to publish self-healing feedback: %v", err)
+			return
+		}
+		a.logger.Infof("Self-healing feedback published successfully: %s", status)
+
+	default:
+		a.logger.Errorf("Unsupported mode for self-healing feedback: %s", mode)
+	}
 }
 
 // performCertificateCheck checks certificate expiration and renews if necessary
