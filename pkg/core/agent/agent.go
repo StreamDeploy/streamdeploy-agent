@@ -42,6 +42,7 @@ type CoreAgent struct {
 	certificateManager types.CertificateManager
 	environmentManager types.EnvironmentManager
 	packageManager     types.PackageManager
+	sshTunnelManager   types.SSHTunnelManager
 
 	// Control channels
 	ctx     context.Context
@@ -125,6 +126,11 @@ func (a *CoreAgent) SetCertificateManager(manager types.CertificateManager) {
 // SetEnvironmentManager sets the environment manager implementation
 func (a *CoreAgent) SetEnvironmentManager(manager types.EnvironmentManager) {
 	a.environmentManager = manager
+}
+
+// SetSSHTunnelManager sets the SSH tunnel manager implementation
+func (a *CoreAgent) SetSSHTunnelManager(manager types.SSHTunnelManager) {
+	a.sshTunnelManager = manager
 }
 
 // SetPackageManager sets the package manager implementation
@@ -810,18 +816,6 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	// Handle temporary command if present
-	if tmpCmd, exists := response["tmp"]; exists {
-		a.logger.Info("Received temporary command")
-		if err := a.executeTemporaryCommand(tmpCmd); err != nil {
-			a.logger.Errorf("Failed to execute temporary command: %v", err)
-			// Continue processing other response data even if tmp command fails
-		}
-		// Remove tmp key from response to prevent it from being saved to state
-		delete(response, "tmp")
-		a.logger.Info("Temporary command executed and removed from memory")
-	}
-
 	newStateData, exists := response["new_state"]
 	if !exists {
 		return nil // No new state
@@ -836,6 +830,20 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 	var newState types.StateConfig
 	if err := json.Unmarshal(newStateJSON, &newState); err != nil {
 		return fmt.Errorf("failed to unmarshal new state: %w", err)
+	}
+
+	// Handle temporary command if present in new_state
+	if tmpCmd, exists := newStateData.(map[string]interface{})["tmp"]; exists {
+		a.logger.Info("Received temporary command")
+		if err := a.executeTemporaryCommand(tmpCmd); err != nil {
+			a.logger.Errorf("Failed to execute temporary command: %v", err)
+			// Continue processing other response data even if tmp command fails
+		}
+		// Remove tmp key from new_state to prevent it from being saved to state
+		if newStateMap, ok := newStateData.(map[string]interface{}); ok {
+			delete(newStateMap, "tmp")
+		}
+		a.logger.Info("Temporary command executed and removed from memory")
 	}
 
 	// Compare with current state
@@ -965,6 +973,21 @@ func (a *CoreAgent) executeTemporaryCommand(tmpCmd interface{}) error {
 		return nil
 	}
 
+	// Parse command type and route accordingly
+	commandType, err := a.parseCommandType(command)
+	if err != nil {
+		return fmt.Errorf("failed to parse command type: %w", err)
+	}
+
+	switch commandType {
+	case "ssh_tunnel":
+		return a.handleSSHTunnelCommand(command)
+	case "regular":
+		// Continue with regular command execution
+	default:
+		return fmt.Errorf("unknown command type: %s", commandType)
+	}
+
 	a.logger.Infof("Executing temporary command: %s", command)
 
 	// Set a timeout for command execution (5 minutes)
@@ -987,6 +1010,66 @@ func (a *CoreAgent) executeTemporaryCommand(tmpCmd interface{}) error {
 	}
 
 	return nil
+}
+
+// handleSSHTunnelCommand handles SSH tunnel commands
+func (a *CoreAgent) handleSSHTunnelCommand(command string) error {
+	// Parse command: "custom ssh user_456 2024-01-01T12:00:00Z"
+	parts := strings.Fields(command)
+	if len(parts) != 4 {
+		return fmt.Errorf("invalid SSH tunnel command format: %s", command)
+	}
+
+	user := parts[2]
+	expiresStr := parts[3]
+
+	// Parse expiration time
+	expires, err := time.Parse(time.RFC3339, expiresStr)
+	if err != nil {
+		return fmt.Errorf("invalid expiration time format: %s", expiresStr)
+	}
+
+	// Check if tunnel is already active
+	if a.sshTunnelManager != nil && a.sshTunnelManager.IsTunnelActive() {
+		a.logger.Info("SSH tunnel already active, stopping existing tunnel")
+		a.sshTunnelManager.StopTunnel()
+	}
+
+	// Start new tunnel
+	a.logger.Infof("Starting SSH tunnel for user: %s, expires: %s", user, expires)
+
+	if err := a.sshTunnelManager.StartTunnel(user, expires); err != nil {
+		return fmt.Errorf("failed to start SSH tunnel: %w", err)
+	}
+
+	a.logger.Info("SSH tunnel started successfully")
+	return nil
+}
+
+// parseCommandType determines the type of command based on its format
+func (a *CoreAgent) parseCommandType(command string) (string, error) {
+	// Trim whitespace
+	command = strings.TrimSpace(command)
+
+	// Check for custom commands (internal communication)
+	if strings.HasPrefix(command, "custom ") {
+		parts := strings.Fields(command)
+		if len(parts) < 2 {
+			return "", fmt.Errorf("invalid custom command format: %s", command)
+		}
+
+		// Check for SSH tunnel command
+		if parts[1] == "ssh" {
+			return "ssh_tunnel", nil
+		}
+
+		// Add other custom command types here in the future
+		// e.g., "custom docker", "custom systemctl", etc.
+		return "", fmt.Errorf("unknown custom command type: %s", parts[1])
+	}
+
+	// Regular shell command
+	return "regular", nil
 }
 
 // sendSelfHealingFeedback sends feedback about self-healing results to the server

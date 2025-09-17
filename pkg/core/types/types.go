@@ -1,6 +1,7 @@
 package types
 
 import (
+	"net"
 	"time"
 )
 
@@ -196,4 +197,44 @@ type EnvironmentManager interface {
 	SyncSystemEnvironment(envVars map[string]string) error
 	GetCurrentSystemEnvironment() (map[string]string, error)
 	RemoveSystemEnvironment() error
+}
+
+// SSH Tunnel related types
+type SSHTunnelCommand struct {
+	Command string `json:"command"`
+	User    string `json:"user"`
+	Expires string `json:"expires"`
+}
+
+type TunnelMessage struct {
+	Service string   `json:"svc"`
+	Type    string   `json:"t"`
+	Channel string   `json:"ch,omitempty"`
+	Host    string   `json:"host,omitempty"`
+	Port    int      `json:"port,omitempty"`
+	Data    string   `json:"b64,omitempty"`
+	Reason  string   `json:"reason,omitempty"`
+	Session string   `json:"session,omitempty"`
+	ChList  []string `json:"ch_list,omitempty"`
+}
+
+type TunnelChannel struct {
+	ID           string
+	LocalConn    *net.Conn
+	RemoteConn   interface{} // Will be *websocket.Conn in implementation
+	Buffer       []byte
+	BufferSize   int
+	IsActive     bool
+	LastActivity time.Time
+}
+
+// SSHTunnelManager interface for SSH tunnel management
+type SSHTunnelManager interface {
+	StartTunnel(user string, expires time.Time) error
+	StopTunnel() error
+	IsTunnelActive() bool
+	HandleTunnelMessage(msg *TunnelMessage) error
+	SendHeartbeat() error
+	Reconnect() error
+	ResumeSession(sessionID string, channels []string) error
 }
