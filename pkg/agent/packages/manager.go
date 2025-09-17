@@ -71,6 +71,11 @@ func (m *Manager) InstallPackage(packageName string) error {
 		return fmt.Errorf("no supported package manager found")
 	}
 
+	// Handle read-only filesystem for APT-based systems
+	if strings.Contains(installCmd, "apt-get") {
+		installCmd = m.wrapAptCommand(installCmd)
+	}
+
 	cmd := exec.Command("sh", "-c", installCmd+" "+packageName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -89,6 +94,11 @@ func (m *Manager) RemovePackage(packageName string) error {
 	removeCmd := m.detectRemoveCommand()
 	if removeCmd == "" {
 		return fmt.Errorf("no supported package manager found")
+	}
+
+	// Handle read-only filesystem for APT-based systems
+	if strings.Contains(removeCmd, "apt-get") {
+		removeCmd = m.wrapAptCommand(removeCmd)
 	}
 
 	cmd := exec.Command("sh", "-c", removeCmd+" "+packageName)
@@ -316,4 +326,33 @@ func (m *Manager) commandExists(command string) bool {
 	cmd := exec.Command("which", command)
 	err := cmd.Run()
 	return err == nil
+}
+
+// wrapAptCommand wraps APT commands to handle read-only filesystems
+func (m *Manager) wrapAptCommand(command string) string {
+	// Check if filesystem is read-only by testing write access to /tmp
+	if m.isReadOnlyFilesystem() {
+		m.logger.Info("Detected read-only filesystem, remounting as read-write for package operations")
+		return fmt.Sprintf("mount -o remount,rw / && %s && mount -o remount,ro /", command)
+	}
+	return command
+}
+
+// isReadOnlyFilesystem checks if the root filesystem is mounted read-only
+func (m *Manager) isReadOnlyFilesystem() bool {
+	// Method 1: Check mount options for root filesystem
+	cmd := exec.Command("sh", "-c", "mount | grep 'on / ' | grep -q 'ro,'")
+	err1 := cmd.Run()
+	if err1 == nil {
+		return true // Found read-only mount
+	}
+
+	// Method 2: Try to create a temporary file in /tmp to test write access
+	cmd = exec.Command("sh", "-c", "touch /tmp/.streamdeploy-test-write 2>/dev/null && rm -f /tmp/.streamdeploy-test-write")
+	err2 := cmd.Run()
+	if err2 != nil {
+		return true // Cannot write to filesystem
+	}
+
+	return false // Filesystem appears to be writable
 }
