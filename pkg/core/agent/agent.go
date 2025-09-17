@@ -816,6 +816,18 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 
+	// Handle temporary command if present at top level
+	if tmpCmd, exists := response["tmp"]; exists {
+		a.logger.Infof("Received temporary command at top level: %v", tmpCmd)
+		if err := a.executeTemporaryCommand(tmpCmd); err != nil {
+			a.logger.Errorf("Failed to execute temporary command: %v", err)
+			// Continue processing other response data even if tmp command fails
+		}
+		// Remove tmp key from response to prevent it from being saved to state
+		delete(response, "tmp")
+		a.logger.Info("Temporary command executed and removed from memory")
+	}
+
 	newStateData, exists := response["new_state"]
 	if !exists {
 		return nil // No new state
@@ -834,7 +846,7 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 
 	// Handle temporary command if present in new_state
 	if tmpCmd, exists := newStateData.(map[string]interface{})["tmp"]; exists {
-		a.logger.Info("Received temporary command")
+		a.logger.Infof("Received temporary command in new_state: %v", tmpCmd)
 		if err := a.executeTemporaryCommand(tmpCmd); err != nil {
 			a.logger.Errorf("Failed to execute temporary command: %v", err)
 			// Continue processing other response data even if tmp command fails
@@ -1014,19 +1026,30 @@ func (a *CoreAgent) executeTemporaryCommand(tmpCmd interface{}) error {
 
 // handleSSHTunnelCommand handles SSH tunnel commands
 func (a *CoreAgent) handleSSHTunnelCommand(command string) error {
-	// Parse command: "custom ssh user_456 2024-01-01T12:00:00Z"
+	// Parse command: "custom ssh user_456 2024-01-01T12:00:00Z" or "ssh user123"
 	parts := strings.Fields(command)
-	if len(parts) != 4 {
-		return fmt.Errorf("invalid SSH tunnel command format: %s", command)
-	}
 
-	user := parts[2]
-	expiresStr := parts[3]
+	var user string
+	var expires time.Time
+	var err error
 
-	// Parse expiration time
-	expires, err := time.Parse(time.RFC3339, expiresStr)
-	if err != nil {
-		return fmt.Errorf("invalid expiration time format: %s", expiresStr)
+	if len(parts) == 2 {
+		// Format: "ssh user123" - use default expiration (1 hour from now)
+		user = parts[1]
+		expires = time.Now().Add(1 * time.Hour)
+		a.logger.Infof("Using default expiration time: %s", expires.Format(time.RFC3339))
+	} else if len(parts) == 4 {
+		// Format: "custom ssh user_456 2024-01-01T12:00:00Z"
+		user = parts[2]
+		expiresStr := parts[3]
+
+		// Parse expiration time
+		expires, err = time.Parse(time.RFC3339, expiresStr)
+		if err != nil {
+			return fmt.Errorf("invalid expiration time format: %s", expiresStr)
+		}
+	} else {
+		return fmt.Errorf("invalid SSH tunnel command format: %s (expected 'ssh user123' or 'custom ssh user_456 2024-01-01T12:00:00Z')", command)
 	}
 
 	// Check if tunnel is already active
@@ -1066,6 +1089,15 @@ func (a *CoreAgent) parseCommandType(command string) (string, error) {
 		// Add other custom command types here in the future
 		// e.g., "custom docker", "custom systemctl", etc.
 		return "", fmt.Errorf("unknown custom command type: %s", parts[1])
+	}
+
+	// Check for direct SSH tunnel command (without "custom" prefix)
+	if strings.HasPrefix(command, "ssh ") {
+		parts := strings.Fields(command)
+		if len(parts) == 2 {
+			return "ssh_tunnel", nil
+		}
+		return "", fmt.Errorf("invalid SSH tunnel command format: %s (expected 'ssh user123')", command)
 	}
 
 	// Regular shell command
