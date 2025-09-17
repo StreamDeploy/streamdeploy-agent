@@ -41,7 +41,8 @@ func (m *Manager) checkWithPackageManager(manager, packageName string) bool {
 
 	switch manager {
 	case "dpkg":
-		cmd = exec.Command("dpkg", "-l", packageName)
+		// Use dpkg -s to check if package is installed and properly configured
+		cmd = exec.Command("dpkg", "-s", packageName)
 	case "rpm":
 		cmd = exec.Command("rpm", "-q", packageName)
 	case "apk":
@@ -57,7 +58,14 @@ func (m *Manager) checkWithPackageManager(manager, packageName string) bool {
 		return false
 	}
 
-	// Check if package name appears in output
+	// For dpkg, check if the package is installed and configured
+	if manager == "dpkg" {
+		outputStr := strings.ToLower(string(output))
+		return strings.Contains(outputStr, "status: install ok installed") &&
+			strings.Contains(outputStr, strings.ToLower(packageName))
+	}
+
+	// For other package managers, check if package name appears in output
 	return strings.Contains(strings.ToLower(string(output)), strings.ToLower(packageName))
 }
 
@@ -82,9 +90,13 @@ func (m *Manager) InstallPackage(packageName string) error {
 		installCmd = m.wrapAptCommand(installCmd)
 	}
 
-	cmd := exec.Command("sh", "-c", installCmd+" "+packageName)
+	// Construct the full command with proper quoting
+	fullCmd := fmt.Sprintf("%s %s", installCmd, packageName)
+	m.logger.Infof("Executing package installation command: %s", fullCmd)
+	cmd := exec.Command("sh", "-c", fullCmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		m.logger.Errorf("Package installation failed for %s: %v, output: %s", packageName, err, string(output))
 		return fmt.Errorf("failed to install package %s: %w, output: %s", packageName, err, string(output))
 	}
 
@@ -95,6 +107,12 @@ func (m *Manager) InstallPackage(packageName string) error {
 // RemovePackage removes a system package
 func (m *Manager) RemovePackage(packageName string) error {
 	m.logger.Infof("Removing system package: %s", packageName)
+
+	// Check if package is actually installed before attempting removal
+	if !m.IsPackageInstalled(packageName) {
+		m.logger.Infof("Package %s is not installed, skipping removal", packageName)
+		return nil
+	}
 
 	// Detect package manager and remove
 	removeCmd := m.detectRemoveCommand()
@@ -107,9 +125,13 @@ func (m *Manager) RemovePackage(packageName string) error {
 		removeCmd = m.wrapAptCommand(removeCmd)
 	}
 
-	cmd := exec.Command("sh", "-c", removeCmd+" "+packageName)
+	// Construct the full command with proper quoting
+	fullCmd := fmt.Sprintf("%s %s", removeCmd, packageName)
+	m.logger.Infof("Executing package removal command: %s", fullCmd)
+	cmd := exec.Command("sh", "-c", fullCmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		m.logger.Errorf("Package removal failed for %s: %v, output: %s", packageName, err, string(output))
 		return fmt.Errorf("failed to remove package %s: %w, output: %s", packageName, err, string(output))
 	}
 
@@ -357,7 +379,8 @@ func (m *Manager) wrapAptCommand(command string) string {
 	// Check if filesystem is read-only by testing write access to /tmp
 	if m.isReadOnlyFilesystem() {
 		m.logger.Info("Detected read-only filesystem, remounting as read-write for package operations")
-		return fmt.Sprintf("mount -o remount,rw / && %s && mount -o remount,ro /", command)
+		// Use proper shell command chaining with error handling
+		return fmt.Sprintf("(mount -o remount,rw / && %s; exit_code=$?; mount -o remount,ro /; exit $exit_code)", command)
 	}
 	return command
 }
