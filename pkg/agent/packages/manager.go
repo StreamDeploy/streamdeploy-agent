@@ -85,13 +85,14 @@ func (m *Manager) InstallPackage(packageName string) error {
 		return fmt.Errorf("no supported package manager found")
 	}
 
+	// Construct the full command with package name first
+	fullCmd := fmt.Sprintf("%s %s", installCmd, packageName)
+
 	// Handle read-only filesystem for APT-based systems
 	if strings.Contains(installCmd, "apt-get") {
-		installCmd = m.wrapAptCommand(installCmd)
+		fullCmd = m.wrapAptCommand(fullCmd)
 	}
 
-	// Construct the full command with proper quoting
-	fullCmd := fmt.Sprintf("%s %s", installCmd, packageName)
 	m.logger.Infof("Executing package installation command: %s", fullCmd)
 	cmd := exec.Command("sh", "-c", fullCmd)
 	output, err := cmd.CombinedOutput()
@@ -120,13 +121,14 @@ func (m *Manager) RemovePackage(packageName string) error {
 		return fmt.Errorf("no supported package manager found")
 	}
 
+	// Construct the full command with package name first
+	fullCmd := fmt.Sprintf("%s %s", removeCmd, packageName)
+
 	// Handle read-only filesystem for APT-based systems
 	if strings.Contains(removeCmd, "apt-get") {
-		removeCmd = m.wrapAptCommand(removeCmd)
+		fullCmd = m.wrapAptCommand(fullCmd)
 	}
 
-	// Construct the full command with proper quoting
-	fullCmd := fmt.Sprintf("%s %s", removeCmd, packageName)
 	m.logger.Infof("Executing package removal command: %s", fullCmd)
 	cmd := exec.Command("sh", "-c", fullCmd)
 	output, err := cmd.CombinedOutput()
