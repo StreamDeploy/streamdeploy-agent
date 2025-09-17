@@ -63,6 +63,12 @@ func (m *Manager) checkWithPackageManager(manager, packageName string) bool {
 
 // InstallPackage installs a system package
 func (m *Manager) InstallPackage(packageName string) error {
+	// Check if package is already installed
+	if m.IsPackageInstalled(packageName) {
+		m.logger.Infof("Package %s is already installed, skipping installation", packageName)
+		return nil
+	}
+
 	m.logger.Infof("Installing system package: %s", packageName)
 
 	// Detect package manager and install
@@ -113,14 +119,21 @@ func (m *Manager) RemovePackage(packageName string) error {
 
 // EnsurePackagesInstalled ensures all specified system packages are installed
 func (m *Manager) EnsurePackagesInstalled(packages []string) error {
+	var installErrors []string
 	for _, pkg := range packages {
 		if !m.IsPackageInstalled(pkg) {
 			if err := m.InstallPackage(pkg); err != nil {
-				return fmt.Errorf("failed to ensure package %s is installed: %w", pkg, err)
+				m.logger.Errorf("Failed to install package %s: %v", pkg, err)
+				installErrors = append(installErrors, fmt.Sprintf("%s: %v", pkg, err))
 			}
 		} else {
 			m.logger.Infof("Package %s is already installed", pkg)
 		}
+	}
+
+	// Return error if any packages failed to install
+	if len(installErrors) > 0 {
+		return fmt.Errorf("failed to install some packages: %s", strings.Join(installErrors, "; "))
 	}
 	return nil
 }
@@ -166,13 +179,24 @@ func (m *Manager) SyncPackages(newPackages, oldPackages []string) error {
 		}
 	}
 
-	// Install new packages
+	// Install new packages (only if not already installed)
+	var installErrors []string
 	for pkg := range newPackageMap {
 		if !oldPackageMap[pkg] {
-			if err := m.InstallPackage(pkg); err != nil {
-				return fmt.Errorf("failed to install new package %s: %w", pkg, err)
+			if !m.IsPackageInstalled(pkg) {
+				if err := m.InstallPackage(pkg); err != nil {
+					m.logger.Errorf("Failed to install new package %s: %v", pkg, err)
+					installErrors = append(installErrors, fmt.Sprintf("%s: %v", pkg, err))
+				}
+			} else {
+				m.logger.Infof("Package %s is already installed, skipping", pkg)
 			}
 		}
+	}
+
+	// Return error if any packages failed to install
+	if len(installErrors) > 0 {
+		return fmt.Errorf("failed to install some packages: %s", strings.Join(installErrors, "; "))
 	}
 
 	m.logger.Info("System package synchronization completed")
