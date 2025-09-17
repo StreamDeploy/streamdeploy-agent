@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/types"
@@ -21,6 +22,8 @@ type Manager struct {
 	monitoring        bool
 	stopMonitoring    chan bool
 	restartMonitoring chan bool
+	updatingState     bool // Flag to prevent circular updates
+	updatingMutex     sync.Mutex
 }
 
 // NewManager creates a new configuration manager
@@ -58,8 +61,18 @@ func (m *Manager) GetStateConfig() *types.StateConfig {
 
 // UpdateStateConfig updates the state configuration
 func (m *Manager) UpdateStateConfig(config *types.StateConfig) error {
+	m.updatingMutex.Lock()
+	m.updatingState = true
+	m.updatingMutex.Unlock()
+
 	m.stateConfig = config
-	return m.SaveStateConfig()
+	err := m.SaveStateConfig()
+
+	m.updatingMutex.Lock()
+	m.updatingState = false
+	m.updatingMutex.Unlock()
+
+	return err
 }
 
 // SaveStateConfig saves the state configuration to disk
@@ -426,10 +439,16 @@ func (m *Manager) monitorFiles() {
 				m.handleDeviceConfigChange()
 			}
 
-			// Check state config
+			// Check state config (only if not currently updating)
 			if newModTime := m.getFileModTime(m.stateConfigPath); newModTime.After(stateConfigModTime) {
-				stateConfigModTime = newModTime
-				m.handleStateConfigChange()
+				m.updatingMutex.Lock()
+				isUpdating := m.updatingState
+				m.updatingMutex.Unlock()
+
+				if !isUpdating {
+					stateConfigModTime = newModTime
+					m.handleStateConfigChange()
+				}
 			}
 
 		case <-m.restartMonitoring:
