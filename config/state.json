@@ -4,7 +4,8 @@
         "heartbeat_frequency": "15s",
         "update_frequency": "30s",
         "mode": "http",
-        "agent_ver": "0.0"
+        "agent_ver": "0.0",
+        "logging_level": "info"
     },
     "containers": [
         {

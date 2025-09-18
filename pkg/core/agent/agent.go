@@ -67,6 +67,9 @@ type CoreAgent struct {
 
 	// Self-healing result tracking
 	selfHealingResult *SelfHealingResult
+
+	// Last applied state snapshot for diffing
+	lastAppliedState *types.StateConfig
 }
 
 // NewCoreAgent creates a new core agent instance
@@ -92,6 +95,9 @@ func NewCoreAgent(deviceConfigPath string) (*CoreAgent, error) {
 	agent.heartbeatInterval = configManager.GetHeartbeatFrequency()
 	agent.updateInterval = configManager.GetUpdateFrequency()
 	agent.certificateCheckInterval = 24 * time.Hour // Check certificates daily
+
+	// Initialize lastAppliedState from current state
+	agent.lastAppliedState = configManager.GetStateConfig()
 
 	logger.Info("Core agent initialized successfully")
 
@@ -863,6 +869,11 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 	if !stateConfigsEqual(currentState, &newState) {
 		a.logger.Info("Received new state configuration")
 
+		// If logging level is debug, print diff between current and new
+		if strings.ToLower(newState.AgentSetting.LoggingLevel) == "debug" {
+			a.logStateDiff(currentState, &newState)
+		}
+
 		// Apply state changes with feedback tracking
 		if err := a.applyStateChangesWithFeedback(currentState, &newState, "api"); err != nil {
 			a.logger.Errorf("Failed to apply state changes: %v", err)
@@ -1306,14 +1317,22 @@ func (a *CoreAgent) handleStateConfigChange(isError bool) {
 		return
 	}
 
+	// If logging level is debug, print diff between last and new state
+	if strings.ToLower(newState.AgentSetting.LoggingLevel) == "debug" {
+		a.logStateDiff(a.lastAppliedState, newState)
+	}
+
 	// Apply the changes using the same logic as API responses
-	// We pass nil as oldState since we want to apply all changes
-	if err := a.applyStateChanges(nil, newState); err != nil {
+	// Use lastAppliedState as old state for accurate sync
+	if err := a.applyStateChanges(a.lastAppliedState, newState); err != nil {
 		a.logger.Errorf("Failed to apply state changes: %v", err)
 		return
 	}
 
 	a.logger.Info("State changes applied successfully")
+
+	// Update lastAppliedState snapshot after successful apply
+	a.lastAppliedState = cloneStateConfig(newState)
 }
 
 // resetAgentConfigToDefault resets agent.json with the current device configuration from memory
@@ -1453,6 +1472,51 @@ func stateConfigsEqual(a, b *types.StateConfig) bool {
 	bJSON, _ := json.Marshal(b)
 
 	return string(aJSON) == string(bJSON)
+}
+
+// logStateDiff logs a concise diff of two state configs when in debug mode
+func (a *CoreAgent) logStateDiff(oldState, newState *types.StateConfig) {
+	if oldState == nil {
+		a.logger.Info("[DEBUG] No previous state; treating entire state as new")
+		return
+	}
+
+	// Compare top-level sections
+	if oldState.AgentSetting != newState.AgentSetting {
+		a.logger.Infof("[DEBUG] AgentSetting changed: old=%v new=%v", oldState.AgentSetting, newState.AgentSetting)
+	}
+	if !envMapsEqual(oldState.Env, newState.Env) {
+		a.logger.Infof("[DEBUG] Env changed: old=%v new=%v", oldState.Env, newState.Env)
+	}
+	// Containers
+	oldC, _ := json.Marshal(oldState.Containers)
+	newC, _ := json.Marshal(newState.Containers)
+	if string(oldC) != string(newC) {
+		a.logger.Infof("[DEBUG] Containers changed: old=%s new=%s", string(oldC), string(newC))
+	}
+	// Packages
+	oldP, _ := json.Marshal(oldState.Packages)
+	newP, _ := json.Marshal(newState.Packages)
+	if string(oldP) != string(newP) {
+		a.logger.Infof("[DEBUG] Packages changed: old=%s new=%s", string(oldP), string(newP))
+	}
+	// Custom packages
+	oldCP, _ := json.Marshal(oldState.CustomPackages)
+	newCP, _ := json.Marshal(newState.CustomPackages)
+	if string(oldCP) != string(newCP) {
+		a.logger.Infof("[DEBUG] CustomPackages changed: old=%s new=%s", string(oldCP), string(newCP))
+	}
+}
+
+// cloneStateConfig makes a deep copy of a StateConfig
+func cloneStateConfig(s *types.StateConfig) *types.StateConfig {
+	if s == nil {
+		return nil
+	}
+	data, _ := json.Marshal(s)
+	var out types.StateConfig
+	_ = json.Unmarshal(data, &out)
+	return &out
 }
 
 // envMapsEqual compares two environment variable maps for equality

@@ -45,6 +45,7 @@ type AgentSetting struct {
 	UpdateFrequency    string `json:"update_frequency"`
 	Mode               string `json:"mode"` // "http" or "mqtt"
 	AgentVer           string `json:"agent_ver"`
+	LoggingLevel       string `json:"logging_level"`
 }
 
 // ContainerConfig represents a container configuration

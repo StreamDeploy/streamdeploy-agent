@@ -226,6 +226,11 @@ func (m *Manager) loadStateConfig() error {
 		return fmt.Errorf("failed to parse state config: %w", err)
 	}
 
+	// Set defaults
+	if config.AgentSetting.LoggingLevel == "" {
+		config.AgentSetting.LoggingLevel = "info"
+	}
+
 	m.stateConfig = &config
 	return nil
 }
