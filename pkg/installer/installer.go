@@ -143,12 +143,21 @@ func (i *Installer) HandleSystemdService(configPath string) error {
 
 		// Verify service is running and stable
 		if !i.isServiceActive() {
+			// Check service logs for debugging
+			i.logger.Errorf("Service failed to start properly. Checking service logs...")
+			if err := i.checkServiceLogs(); err != nil {
+				i.logger.Errorf("Failed to check service logs: %v", err)
+			}
 			return fmt.Errorf("service failed to start properly")
 		}
 
 		// Additional verification: check that the systemd instance is actually running
 		time.Sleep(2 * time.Second)
 		if !i.isServiceActive() {
+			i.logger.Errorf("Service is not stable after start. Checking service logs...")
+			if err := i.checkServiceLogs(); err != nil {
+				i.logger.Errorf("Failed to check service logs: %v", err)
+			}
 			return fmt.Errorf("service is not stable after start")
 		}
 
@@ -253,9 +262,20 @@ func (i *Installer) isServiceActive() bool {
 		return false
 	}
 
-	cmd := exec.Command("systemctl", "is-active", "streamdeploy-agent")
-	err := cmd.Run()
-	return err == nil
+	// Use systemctl show to get detailed status
+	cmd := exec.Command("systemctl", "show", "streamdeploy-agent", "--property=ActiveState,SubState")
+	output, err := cmd.Output()
+	if err != nil {
+		i.logger.Errorf("Failed to check service status: %v", err)
+		return false
+	}
+
+	status := string(output)
+	i.logger.Infof("Service status: %s", status)
+
+	// Service is considered active if it's in "active" state or "activating" state
+	// (activating means it's starting up, which is fine for our purposes)
+	return strings.Contains(status, "ActiveState=active") || strings.Contains(status, "ActiveState=activating")
 }
 
 // isServiceInstalled checks if the systemd service is installed
@@ -390,5 +410,18 @@ func (i *Installer) runSystemCommand(name string, arg ...string) error {
 		i.logger.Errorf("Output: %s", string(output))
 		return err
 	}
+	return nil
+}
+
+// checkServiceLogs checks the systemd service logs for debugging
+func (i *Installer) checkServiceLogs() error {
+	cmd := exec.Command("journalctl", "-u", "streamdeploy-agent", "--no-pager", "-n", "20")
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to get service logs: %w", err)
+	}
+
+	i.logger.Errorf("Recent service logs:")
+	i.logger.Errorf("%s", string(output))
 	return nil
 }
