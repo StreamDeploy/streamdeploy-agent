@@ -49,6 +49,7 @@ type PackageManager struct {
 	UpdateCmd  string `json:"update_cmd"`
 }
 
+// DeviceConfig represents the device configuration
 type DeviceConfig struct {
 	DeviceID           string         `json:"device_id"`
 	EnrollBaseURL      string         `json:"enroll_base_url"`
@@ -1059,4 +1060,630 @@ func loadDeviceConfig(configPath string) (*DeviceConfig, error) {
 	}
 
 	return &config, nil
+}
+
+// SystemInfo holds system detection information
+type SystemInfo struct {
+	OSName       string
+	OSVersion    string
+	Architecture string
+}
+
+// Public utility functions for use by main.go
+
+// ExtractDeviceIDFromJWT extracts device ID from JWT token (public version)
+func ExtractDeviceIDFromJWT(token string) (string, error) {
+	// JWT has 3 parts separated by dots: header.payload.signature
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", fmt.Errorf("invalid JWT format")
+	}
+
+	payload := parts[1]
+
+	// Add padding if needed for base64 decoding
+	for len(payload)%4 != 0 {
+		payload += "="
+	}
+
+	// Decode base64 payload
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode JWT payload: %w", err)
+	}
+
+	// Parse JSON to extract device_id
+	var claims map[string]interface{}
+	if err := json.Unmarshal(decoded, &claims); err != nil {
+		return "", fmt.Errorf("failed to parse JWT claims: %w", err)
+	}
+
+	deviceID, ok := claims["device_id"].(string)
+	if !ok {
+		return "", fmt.Errorf("device_id not found in JWT claims")
+	}
+
+	return deviceID, nil
+}
+
+// GetBootstrapToken gets bootstrap token from command line or environment (public version)
+func GetBootstrapToken() string {
+	// Check command line argument (skip first arg which is the binary name)
+	if len(os.Args) >= 2 && len(os.Args[1]) > 0 && !strings.HasPrefix(os.Args[1], "/") {
+		return os.Args[1]
+	}
+
+	// Check environment variable
+	return os.Getenv("SD_BOOTSTRAP_TOKEN")
+}
+
+// DetectSystemInfo detects system information (public version)
+func DetectSystemInfo() (*SystemInfo, error) {
+	// Detect OS from /etc/os-release
+	osInfo, err := ParseOSRelease()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse /etc/os-release: %w", err)
+	}
+
+	// Detect architecture
+	arch := DetectArchitecture()
+
+	return &SystemInfo{
+		OSName:       osInfo["ID"],
+		OSVersion:    osInfo["VERSION_ID"],
+		Architecture: arch,
+	}, nil
+}
+
+// ParseOSRelease parses /etc/os-release file (public version)
+func ParseOSRelease() (map[string]string, error) {
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return nil, err
+	}
+
+	osInfo := make(map[string]string)
+	lines := strings.Split(string(data), "\n")
+
+	for _, line := range lines {
+		if strings.Contains(line, "=") {
+			parts := strings.SplitN(line, "=", 2)
+			key := parts[0]
+			value := strings.Trim(parts[1], "\"")
+			osInfo[key] = value
+		}
+	}
+
+	return osInfo, nil
+}
+
+// DetectArchitecture detects system architecture (public version)
+func DetectArchitecture() string {
+	// Use Go's runtime to detect architecture
+	switch runtime.GOARCH {
+	case "amd64":
+		return "amd64"
+	case "arm64":
+		return "arm64"
+	case "arm":
+		return DetectARMVariant()
+	case "riscv64":
+		return "riscv64"
+	default:
+		return runtime.GOARCH
+	}
+}
+
+// DetectARMVariant detects ARM variant (public version)
+func DetectARMVariant() string {
+	// Try to detect ARM variant by checking /proc/cpuinfo
+	if cpuInfo, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+		cpuInfoStr := string(cpuInfo)
+
+		// Look for ARM architecture version
+		if strings.Contains(cpuInfoStr, "ARMv6") {
+			return "armv6"
+		}
+		if strings.Contains(cpuInfoStr, "ARMv7") {
+			return "armv7"
+		}
+
+		// Check for specific CPU features that indicate ARMv7
+		if strings.Contains(cpuInfoStr, "vfpv3") || strings.Contains(cpuInfoStr, "neon") {
+			return "armv7"
+		}
+	}
+
+	// Default to armv7 if we can't determine the specific variant
+	return "armv7"
+}
+
+// WriteJSONFile writes data to JSON file (public version)
+func WriteJSONFile(path string, data interface{}) error {
+	jsonData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, jsonData, 0644)
+}
+
+// RunSystemCommand runs a system command (public version)
+func RunSystemCommand(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = "/"
+	return cmd.Run()
+}
+
+// CommandExists checks if a command is available in PATH (public version)
+func CommandExists(command string) bool {
+	_, err := exec.LookPath(command)
+	return err == nil
+}
+
+// IsRunningUnderSystemd checks if we're running under systemd using multiple indicators
+func IsRunningUnderSystemd() bool {
+	// Check environment variables that systemd sets
+	invocationID := os.Getenv("INVOCATION_ID")
+	notifySocket := os.Getenv("NOTIFY_SOCKET")
+
+	// Check if we have systemd environment variables (most reliable)
+	if invocationID != "" || notifySocket != "" {
+		return true
+	}
+
+	// Check if we have a systemd journal fd (fd 3 is typically used by systemd)
+	if fd3, err := os.Open("/proc/self/fd/3"); err == nil {
+		fd3.Close()
+		// Check if it's a systemd journal fd by checking the file descriptor info
+		if link, err := os.Readlink("/proc/self/fd/3"); err == nil && strings.Contains(link, "socket") {
+			return true
+		}
+	}
+
+	// Check if we're running as a systemd service by checking our parent process
+	if ppid := os.Getppid(); ppid > 1 {
+		if cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", ppid)); err == nil {
+			cmdlineStr := strings.TrimRight(string(cmdline), "\x00")
+			if strings.Contains(cmdlineStr, "systemd") || strings.Contains(cmdlineStr, "systemctl") {
+				return true
+			}
+		}
+	}
+
+	// Check if we're running from the expected systemd location
+	if currentBinary, err := os.Executable(); err == nil {
+		if currentBinary == "/usr/local/bin/streamdeploy-agent" {
+			// If we're running from the systemd location, check if systemd is managing us
+			if IsServiceActive() {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// IsServiceActive checks if our service is currently active in systemctl
+func IsServiceActive() bool {
+	if !CommandExists("systemctl") {
+		return false
+	}
+
+	cmd := exec.Command("systemctl", "is-active", "streamdeploy-agent")
+	// Set working directory to root to avoid getcwd() issues
+	cmd.Dir = "/"
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	return strings.TrimSpace(string(output)) == "active"
+}
+
+// IsServiceInstalled checks if the systemd service is installed
+func IsServiceInstalled() bool {
+	_, err := os.Stat("/etc/systemd/system/streamdeploy-agent.service")
+	return err == nil
+}
+
+// CopyBinaryToInstallDir copies the current binary to the install directory
+func CopyBinaryToInstallDir(logger types.Logger, sourcePath, destPath string) error {
+	logger.Infof("Copying binary from %s to %s", sourcePath, destPath)
+
+	// Create install directory if it doesn't exist
+	if err := os.MkdirAll("/usr/local/bin", 0755); err != nil {
+		return fmt.Errorf("failed to create install directory: %w", err)
+	}
+
+	// Read source file
+	sourceData, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return fmt.Errorf("failed to read source binary: %w", err)
+	}
+
+	// Write to destination
+	if err := os.WriteFile(destPath, sourceData, 0755); err != nil {
+		return fmt.Errorf("failed to write destination binary: %w", err)
+	}
+
+	logger.Info("Binary copied successfully")
+	return nil
+}
+
+// CreateServiceFile creates the systemd service file
+func CreateServiceFile(logger types.Logger) error {
+	logger.Info("Creating systemd service file...")
+
+	serviceContent := `[Unit]
+Description=StreamDeploy Agent
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/streamdeploy-agent /etc/streamdeploy/agent.json
+Restart=always
+RestartSec=10
+KillMode=mixed
+TimeoutStopSec=30
+
+# systemd automatically sets INVOCATION_ID for service detection
+
+# Security settings
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/etc/streamdeploy /var/lib/streamdeploy /var/log
+
+[Install]
+WantedBy=multi-user.target
+`
+
+	if err := os.WriteFile("/etc/systemd/system/streamdeploy-agent.service", []byte(serviceContent), 0644); err != nil {
+		return fmt.Errorf("failed to write service file: %w", err)
+	}
+
+	logger.Info("Service file created successfully")
+	return nil
+}
+
+// EnableAndStartService enables and starts the systemd service
+func EnableAndStartService(logger types.Logger) error {
+	logger.Info("Enabling and starting systemd service...")
+
+	commands := []struct {
+		cmd  []string
+		desc string
+	}{
+		{[]string{"systemctl", "daemon-reload"}, "reloading systemd daemon"},
+		{[]string{"systemctl", "enable", "streamdeploy-agent"}, "enabling service"},
+		{[]string{"systemctl", "start", "streamdeploy-agent"}, "starting service"},
+	}
+
+	for _, cmdInfo := range commands {
+		logger.Infof("Running: %s", cmdInfo.desc)
+		cmd := exec.Command(cmdInfo.cmd[0], cmdInfo.cmd[1:]...)
+
+		// Set working directory to root to avoid getcwd() issues
+		cmd.Dir = "/"
+
+		if output, err := cmd.CombinedOutput(); err != nil {
+			logger.Errorf("Failed to run %s: %v, output: %s", cmdInfo.desc, err, string(output))
+			return fmt.Errorf("failed to run %s: %w", cmdInfo.desc, err)
+		}
+	}
+
+	logger.Info("Service enabled and started successfully")
+	return nil
+}
+
+// Modular initialization functions for use by main.go
+
+// RunModularInitialization performs modular initialization checks
+func RunModularInitialization(logger types.Logger, configPath string) error {
+	logger.Info("Starting modular initialization flow...")
+
+	// Step 1: Check and create agent.json if needed
+	if err := EnsureAgentConfig(logger, configPath); err != nil {
+		return fmt.Errorf("failed to ensure agent config: %w", err)
+	}
+
+	// Step 2: Check and create state.json if needed
+	if err := EnsureStateConfig(logger); err != nil {
+		return fmt.Errorf("failed to ensure state config: %w", err)
+	}
+
+	// Step 3: Check and perform certificate flow if needed
+	if err := EnsureCertificates(logger, configPath); err != nil {
+		return fmt.Errorf("failed to ensure certificates: %w", err)
+	}
+
+	// Step 4: Handle systemd service management
+	if err := HandleSystemdService(logger, configPath); err != nil {
+		return fmt.Errorf("failed to handle systemd service: %w", err)
+	}
+
+	logger.Info("Modular initialization completed successfully")
+	return nil
+}
+
+// EnsureAgentConfig checks if agent.json exists, creates it if not
+func EnsureAgentConfig(logger types.Logger, configPath string) error {
+	logger.Info("Checking agent.json configuration...")
+
+	if _, err := os.Stat(configPath); err == nil {
+		logger.Info("agent.json already exists")
+		return nil
+	}
+
+	logger.Info("agent.json not found, creating default configuration...")
+
+	// Get bootstrap token for device ID extraction
+	bootstrapToken := GetBootstrapToken()
+	if bootstrapToken == "" {
+		return fmt.Errorf("bootstrap token is required to create agent.json. Usage: sudo ./streamdeploy-agent <token> or export SD_BOOTSTRAP_TOKEN=\"your-token\"")
+	}
+
+	// Extract device ID from JWT
+	deviceID, err := ExtractDeviceIDFromJWT(bootstrapToken)
+	if err != nil {
+		return fmt.Errorf("failed to extract device_id from bootstrap token: %w", err)
+	}
+
+	// Detect system information
+	osInfo, err := DetectSystemInfo()
+	if err != nil {
+		return fmt.Errorf("failed to detect system information: %w", err)
+	}
+
+	// Create device config
+	deviceConfig := DeviceConfig{
+		DeviceID:           deviceID,
+		EnrollBaseURL:      APIBase,
+		HTTPSMTLSEndpoint:  HTTPSEndpoint,
+		MQTTWSMTLSEndpoint: MQTTEndpoint,
+		PKIDir:             PKIDir,
+		OSName:             osInfo.OSName,
+		OSVersion:          osInfo.OSVersion,
+		Architecture:       osInfo.Architecture,
+	}
+
+	// Create config directory
+	configDir := filepath.Dir(configPath)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	// Write config file
+	if err := WriteJSONFile(configPath, deviceConfig); err != nil {
+		return fmt.Errorf("failed to write agent config: %w", err)
+	}
+
+	logger.Infof("Created agent.json with device ID: %s", deviceID)
+	return nil
+}
+
+// EnsureStateConfig checks if state.json exists, creates it if not
+func EnsureStateConfig(logger types.Logger) error {
+	logger.Info("Checking state.json configuration...")
+
+	stateConfigPath := "/etc/streamdeploy/state.json"
+	if _, err := os.Stat(stateConfigPath); err == nil {
+		logger.Info("state.json already exists")
+		return nil
+	}
+
+	logger.Info("state.json not found, creating default configuration...")
+
+	// Create state config with default values
+	stateConfig := StateConfig{
+		SchemaVersion: "1.0",
+		AgentSetting: AgentSetting{
+			HeartbeatFrequency: "15s",
+			UpdateFrequency:    "30s",
+			Mode:               "http",
+			AgentVer:           "1",
+			LoggingLevel:       "info",
+		},
+		Containers:     []interface{}{},
+		ContainerLogin: "",
+		Env:            make(map[string]string),
+		Packages:       RequiredPackages,
+		CustomMetrics:  make(map[string]string),
+		CustomPackages: make(map[string]interface{}),
+	}
+
+	// Create config directory
+	if err := os.MkdirAll("/etc/streamdeploy", 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	// Write state config file
+	if err := WriteJSONFile(stateConfigPath, stateConfig); err != nil {
+		return fmt.Errorf("failed to write state config: %w", err)
+	}
+
+	logger.Info("Created state.json with default configuration")
+	return nil
+}
+
+// EnsureCertificates checks if certificates exist, runs cert flow if not
+func EnsureCertificates(logger types.Logger, configPath string) error {
+	logger.Info("Checking certificates...")
+
+	// Load device config to get PKI directory
+	deviceConfig, err := LoadDeviceConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to load device config: %w", err)
+	}
+
+	pkiDir := deviceConfig.PKIDir
+	if pkiDir == "" {
+		pkiDir = PKIDir
+	}
+
+	// Check if certificates exist
+	requiredFiles := []string{
+		filepath.Join(pkiDir, "ca.crt"),
+		filepath.Join(pkiDir, "device.crt"),
+		filepath.Join(pkiDir, "device.key"),
+		filepath.Join(pkiDir, "fullchain.crt"),
+	}
+
+	allExist := true
+	for _, file := range requiredFiles {
+		if _, err := os.Stat(file); os.IsNotExist(err) {
+			logger.Infof("Certificate file missing: %s", file)
+			allExist = false
+			break
+		}
+	}
+
+	if allExist {
+		logger.Info("All certificates found")
+		return nil
+	}
+
+	logger.Info("Certificates missing, running certificate enrollment flow...")
+
+	// Get bootstrap token
+	bootstrapToken := GetBootstrapToken()
+	if bootstrapToken == "" {
+		return fmt.Errorf("bootstrap token is required for certificate enrollment")
+	}
+
+	// Run certificate enrollment using installer logic
+	if err := PerformCertificateEnrollment(logger, deviceConfig, bootstrapToken); err != nil {
+		return fmt.Errorf("certificate enrollment failed: %w", err)
+	}
+
+	logger.Info("Certificate enrollment completed successfully")
+	return nil
+}
+
+// HandleSystemdService manages systemd service (stop, remove, replace, launch, kill self)
+func HandleSystemdService(logger types.Logger, configPath string) error {
+	logger.Info("Handling systemd service management...")
+
+	// Check if systemctl is available
+	if !CommandExists("systemctl") {
+		logger.Info("systemctl not available, skipping service management")
+		return nil
+	}
+
+	// Check if we have root privileges
+	if os.Geteuid() != 0 {
+		logger.Info("Not running as root, skipping service management")
+		return nil
+	}
+
+	// Check if we're already running under systemd (avoid recursive service management)
+	if IsRunningUnderSystemd() {
+		logger.Info("Already running under systemd service, skipping service management")
+		return nil
+	}
+
+	logger.Info("Not running under systemd, proceeding with service management")
+
+	// Get current executable path
+	currentBinary, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to get current executable path: %w", err)
+	}
+
+	expectedPath := "/usr/local/bin/streamdeploy-agent"
+
+	// Step 1: Stop existing systemd service if running (we're running manually)
+	if IsServiceActive() {
+		logger.Info("Stopping existing streamdeploy-agent systemd service...")
+		if err := RunSystemCommand("systemctl", "stop", "streamdeploy-agent"); err != nil {
+			logger.Errorf("Failed to stop service: %v", err)
+		}
+	}
+
+	// Step 2: Disable existing service if installed
+	if IsServiceInstalled() {
+		logger.Info("Disabling existing streamdeploy-agent service...")
+		if err := RunSystemCommand("systemctl", "disable", "streamdeploy-agent"); err != nil {
+			logger.Errorf("Failed to disable service: %v", err)
+		}
+	}
+
+	// Step 3: Replace the streamdeploy file with own executable
+	if currentBinary != expectedPath {
+		logger.Infof("Copying binary from %s to %s", currentBinary, expectedPath)
+		if err := CopyBinaryToInstallDir(logger, currentBinary, expectedPath); err != nil {
+			return fmt.Errorf("failed to copy binary to install directory: %w", err)
+		}
+	}
+
+	// Step 4: Create and launch systemd service
+	if err := CreateServiceFile(logger); err != nil {
+		return fmt.Errorf("failed to create service file: %w", err)
+	}
+
+	if err := EnableAndStartService(logger); err != nil {
+		return fmt.Errorf("failed to enable and start service: %w", err)
+	}
+
+	// Step 5: Kill itself if we're not the installed binary (replace with systemd version)
+	if currentBinary != expectedPath {
+		logger.Info("Systemd service started successfully. Replacing manual process with systemd service...")
+
+		// Wait longer for service to fully start and stabilize
+		time.Sleep(5 * time.Second)
+
+		// Verify service is running and stable
+		if !IsServiceActive() {
+			return fmt.Errorf("service failed to start properly")
+		}
+
+		// Additional verification: check that the systemd instance is actually running
+		time.Sleep(2 * time.Second)
+		if !IsServiceActive() {
+			return fmt.Errorf("service is not stable after start")
+		}
+
+		logger.Info("Systemd service verified as running and stable. Exiting manual process.")
+		os.Exit(0)
+	}
+
+	return nil
+}
+
+// PerformCertificateEnrollment performs certificate enrollment only (without full installation)
+func PerformCertificateEnrollment(logger types.Logger, deviceConfig *DeviceConfig, bootstrapToken string) error {
+	logger.Info("Starting certificate enrollment process...")
+
+	// Create PKI directory
+	if err := os.MkdirAll(deviceConfig.PKIDir, 0755); err != nil {
+		return fmt.Errorf("failed to create PKI directory: %w", err)
+	}
+
+	// Create installer instance for certificate enrollment
+	installerInstance := &Installer{
+		logger:         logger,
+		bootstrapToken: bootstrapToken,
+		deviceID:       deviceConfig.DeviceID,
+		osName:         deviceConfig.OSName,
+		osVersion:      deviceConfig.OSVersion,
+		architecture:   deviceConfig.Architecture,
+		machineType:    deviceConfig.MachineType,
+		packageManager: deviceConfig.PackageManager,
+	}
+
+	// Run only the certificate exchange part (not the full installer)
+	if err := installerInstance.performCertificateExchange(); err != nil {
+		return fmt.Errorf("certificate enrollment failed: %w", err)
+	}
+
+	logger.Info("Certificate enrollment completed successfully")
+	return nil
+}
+
+// LoadDeviceConfig loads the device configuration from file (public version)
+func LoadDeviceConfig(configPath string) (*DeviceConfig, error) {
+	return loadDeviceConfig(configPath)
 }
