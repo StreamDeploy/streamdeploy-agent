@@ -65,9 +65,6 @@ type CoreAgent struct {
 	selfHealingLock sync.RWMutex
 	isSelfHealing   bool
 
-	// Status update application flag (distinguish from drift self-healing)
-	isApplyingState bool
-
 	// Self-healing result tracking
 	selfHealingResult *SelfHealingResult
 
@@ -223,17 +220,9 @@ func (a *CoreAgent) SetSelfHealing(healing bool) {
 	defer a.selfHealingLock.Unlock()
 	a.isSelfHealing = healing
 	if healing {
-		if a.isApplyingState {
-			a.logger.Info("Status update started - API calls will be suspended")
-		} else {
-			a.logger.Info("Self-healing started - API calls will be suspended")
-		}
+		a.logger.Info("Self-healing started - API calls will be suspended")
 	} else {
-		if a.isApplyingState {
-			a.logger.Info("Status update completed - API calls resumed")
-		} else {
-			a.logger.Info("Self-healing completed - API calls resumed")
-		}
+		a.logger.Info("Self-healing completed - API calls resumed")
 	}
 }
 
@@ -870,10 +859,6 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 
 // applyStateChangesWithFeedback applies state changes with feedback tracking
 func (a *CoreAgent) applyStateChangesWithFeedback(oldState, newState *types.StateConfig, triggeredBy string) error {
-	// Mark that we're applying a state update (affects logging wording)
-	a.isApplyingState = true
-	defer func() { a.isApplyingState = false }()
-
 	// Set self-healing flag to prevent API calls during state changes
 	a.SetSelfHealing(true)
 	defer a.SetSelfHealing(false)
@@ -1365,10 +1350,6 @@ func (a *CoreAgent) waitForUpdateAndApplyStateChange() {
 
 // applyStateChanges applies state changes from old state to new state
 func (a *CoreAgent) applyStateChanges(oldState, newState *types.StateConfig) error {
-	// Mark that we're applying a state update (affects logging wording)
-	a.isApplyingState = true
-	defer func() { a.isApplyingState = false }()
-
 	// Set self-healing flag to prevent API calls during state changes
 	a.SetSelfHealing(true)
 	defer a.SetSelfHealing(false)
