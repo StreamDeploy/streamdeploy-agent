@@ -562,6 +562,7 @@ func ensureStateConfig(logger types.Logger) error {
 			"update_frequency":    "30s",
 			"mode":                "http",
 			"agent_ver":           "1",
+			"logging_level":       "info",
 		},
 		"containers":      []interface{}{},
 		"containerLogin":  "",

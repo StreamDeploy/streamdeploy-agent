@@ -136,7 +136,8 @@ The agent will automatically detect if it needs to run the installer flow based 
     "heartbeat_frequency": "15s",
     "update_frequency": "30s",
     "mode": "http",
-    "agent_ver": "1"
+    "agent_ver": "1",
+    "logging_level": "info"
   },
   "containers": [],
   "packages": [],

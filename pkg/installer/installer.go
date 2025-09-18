@@ -78,6 +78,7 @@ type AgentSetting struct {
 	UpdateFrequency    string `json:"update_frequency"`
 	Mode               string `json:"mode"`
 	AgentVer           string `json:"agent_ver"`
+	LoggingLevel       string `json:"logging_level"`
 }
 
 type EnrollStartResponse struct {
@@ -670,6 +671,7 @@ func (i *Installer) createConfig() error {
 			UpdateFrequency:    "30s",
 			Mode:               "http",
 			AgentVer:           "1",
+			LoggingLevel:       "info",
 		},
 		Containers:     []interface{}{},
 		ContainerLogin: "",

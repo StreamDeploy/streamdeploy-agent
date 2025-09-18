@@ -84,6 +84,7 @@ func (m *mockConfigManager) GetStateConfig() *types.StateConfig {
 			UpdateFrequency:    "30s",
 			Mode:               "http",
 			AgentVer:           "0.0",
+			LoggingLevel:       "info",
 		},
 	}
 }
