@@ -29,29 +29,29 @@ build: $(BUILD_DIR) build-linux-arm64 build-linux-arm build-linux-riscv64 build-
 # Build for Linux ARM64 (AArch64) - Jetson Orin, RK3588, Pi 4/5 64-bit, most modern SBCs
 build-linux-arm64: $(BUILD_DIR)
 	@echo "Building for Linux ARM64 (AArch64)..."
-	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(AGENT_BINARY)-linux-arm64 .
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(AGENT_BINARY)-linux-arm64 ./cmd/agent
 
 # Build for Linux ARM 32-bit - Pi Zero/2W, older Pi/ARMv7 boards
 build-linux-arm: $(BUILD_DIR)
 	@echo "Building for Linux ARM 32-bit (ARMv6)..."
-	GOOS=linux GOARCH=arm GOARM=6 CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(AGENT_BINARY)-linux-armv6 .
+	GOOS=linux GOARCH=arm GOARM=6 CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(AGENT_BINARY)-linux-armv6 ./cmd/agent
 	@echo "Building for Linux ARM 32-bit (ARMv7)..."
-	GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(AGENT_BINARY)-linux-armv7 .
+	GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(AGENT_BINARY)-linux-armv7 ./cmd/agent
 
 # Build for Linux RISC-V 64-bit - newer RISC-V SBCs (Milk-V, Lichee, etc.)
 build-linux-riscv64: $(BUILD_DIR)
 	@echo "Building for Linux RISC-V 64-bit..."
-	GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(AGENT_BINARY)-linux-riscv64 .
+	GOOS=linux GOARCH=riscv64 CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(AGENT_BINARY)-linux-riscv64 ./cmd/agent
 
 # Build for Linux AMD64 - x86_64 gateways/NVRs
 build-linux-amd64: $(BUILD_DIR)
 	@echo "Building for Linux AMD64..."
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(AGENT_BINARY)-linux-amd64 .
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(AGENT_BINARY)-linux-amd64 ./cmd/agent
 
 # Build the full Go agent (for local development)
 agent: $(BUILD_DIR)
 	@echo "Building StreamDeploy Agent (local architecture)..."
-	$(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(AGENT_BINARY) .
+	$(GO) build $(GO_BUILD_FLAGS) -o $(BUILD_DIR)/$(AGENT_BINARY) ./cmd/agent
 
 # Run tests
 test:
