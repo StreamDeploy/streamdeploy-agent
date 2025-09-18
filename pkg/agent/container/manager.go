@@ -145,7 +145,7 @@ func (m *Manager) PerformHealthCheck(container *types.ContainerInfo) bool {
 }
 
 // SyncContainers synchronizes containers based on new and old configurations
-func (m *Manager) SyncContainers(newConfigs, oldConfigs []types.ContainerConfig) error {
+func (m *Manager) SyncContainers(newConfigs, oldConfigs []types.ContainerConfig) (bool, error) {
 	// Check if there are any actual changes needed
 	hasChanges := false
 
@@ -182,7 +182,7 @@ func (m *Manager) SyncContainers(newConfigs, oldConfigs []types.ContainerConfig)
 
 	// If no changes needed, return early
 	if !hasChanges {
-		return nil
+		return false, nil
 	}
 
 	m.logger.Info("Synchronizing containers")
@@ -208,7 +208,7 @@ func (m *Manager) SyncContainers(newConfigs, oldConfigs []types.ContainerConfig)
 			// New container, start it
 			m.logger.Infof("Starting new container: %s", name)
 			if err := m.StartContainer(&newConfig); err != nil {
-				return fmt.Errorf("failed to start new container %s: %w", name, err)
+				return true, fmt.Errorf("failed to start new container %s: %w", name, err)
 			}
 		} else if !m.configsEqual(oldConfig, newConfig) {
 			// Configuration changed, recreate container
@@ -220,18 +220,18 @@ func (m *Manager) SyncContainers(newConfigs, oldConfigs []types.ContainerConfig)
 				m.logger.Errorf("Failed to remove container %s: %v", name, err)
 			}
 			if err := m.StartContainer(&newConfig); err != nil {
-				return fmt.Errorf("failed to recreate container %s: %w", name, err)
+				return true, fmt.Errorf("failed to recreate container %s: %w", name, err)
 			}
 		} else {
 			// Configuration unchanged, ensure it's running
 			if err := m.StartContainer(&newConfig); err != nil {
-				return fmt.Errorf("failed to ensure container %s is running: %w", name, err)
+				return true, fmt.Errorf("failed to ensure container %s is running: %w", name, err)
 			}
 		}
 	}
 
 	m.logger.Info("Container synchronization completed")
-	return nil
+	return true, nil
 }
 
 // GetContainerInfo retrieves information about a container

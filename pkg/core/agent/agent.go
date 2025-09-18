@@ -894,11 +894,12 @@ func (a *CoreAgent) applyStateChangesWithFeedback(oldState, newState *types.Stat
 			oldContainers = oldState.Containers
 		}
 
-		if err := a.containerManager.SyncContainers(newState.Containers, oldContainers); err != nil {
+		hasChanges, err := a.containerManager.SyncContainers(newState.Containers, oldContainers)
+		if err != nil {
 			a.logger.Errorf("Failed to sync containers: %v", err)
 			result.Success = false
 			result.Errors[string(TaskContainers)] = err.Error()
-		} else {
+		} else if hasChanges {
 			a.logger.Info("Containers synchronized successfully")
 		}
 	}
@@ -929,11 +930,12 @@ func (a *CoreAgent) applyStateChangesWithFeedback(oldState, newState *types.Stat
 			oldPackages = oldState.Packages
 		}
 
-		if err := a.packageManager.SyncPackages(newState.Packages, oldPackages); err != nil {
+		hasChanges, err := a.packageManager.SyncPackages(newState.Packages, oldPackages)
+		if err != nil {
 			a.logger.Errorf("Failed to sync system packages: %v", err)
 			result.Success = false
 			result.Errors[string(TaskPackages)] = err.Error()
-		} else {
+		} else if hasChanges {
 			a.logger.Info("System packages synchronized successfully")
 		}
 
@@ -943,11 +945,12 @@ func (a *CoreAgent) applyStateChangesWithFeedback(oldState, newState *types.Stat
 			oldCustomPackages = oldState.CustomPackages
 		}
 
-		if err := a.packageManager.SyncCustomPackages(newState.CustomPackages, oldCustomPackages); err != nil {
+		hasChanges, err = a.packageManager.SyncCustomPackages(newState.CustomPackages, oldCustomPackages)
+		if err != nil {
 			a.logger.Errorf("Failed to sync custom packages: %v", err)
 			result.Success = false
 			result.Errors[string(TaskCustomPackages)] = err.Error()
-		} else {
+		} else if hasChanges {
 			a.logger.Info("Custom packages synchronized successfully")
 		}
 	}
@@ -1393,9 +1396,10 @@ func (a *CoreAgent) applyStateChanges(oldState, newState *types.StateConfig) err
 			oldContainers = oldState.Containers
 		}
 
-		if err := a.containerManager.SyncContainers(newState.Containers, oldContainers); err != nil {
+		hasChanges, err := a.containerManager.SyncContainers(newState.Containers, oldContainers)
+		if err != nil {
 			a.logger.Errorf("Failed to sync containers: %v", err)
-		} else {
+		} else if hasChanges {
 			a.logger.Info("Containers synchronized successfully")
 		}
 	}
@@ -1424,9 +1428,10 @@ func (a *CoreAgent) applyStateChanges(oldState, newState *types.StateConfig) err
 			oldPackages = oldState.Packages
 		}
 
-		if err := a.packageManager.SyncPackages(newState.Packages, oldPackages); err != nil {
+		hasChanges, err := a.packageManager.SyncPackages(newState.Packages, oldPackages)
+		if err != nil {
 			a.logger.Errorf("Failed to sync system packages: %v", err)
-		} else {
+		} else if hasChanges {
 			a.logger.Info("System packages synchronized successfully")
 		}
 
@@ -1436,9 +1441,10 @@ func (a *CoreAgent) applyStateChanges(oldState, newState *types.StateConfig) err
 			oldCustomPackages = oldState.CustomPackages
 		}
 
-		if err := a.packageManager.SyncCustomPackages(newState.CustomPackages, oldCustomPackages); err != nil {
+		hasChanges, err = a.packageManager.SyncCustomPackages(newState.CustomPackages, oldCustomPackages)
+		if err != nil {
 			a.logger.Errorf("Failed to sync custom packages: %v", err)
-		} else {
+		} else if hasChanges {
 			a.logger.Info("Custom packages synchronized successfully")
 		}
 	}

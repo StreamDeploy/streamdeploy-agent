@@ -169,7 +169,7 @@ type ContainerManager interface {
 	StopContainer(name string) error
 	EnsureContainersRunning(configs []ContainerConfig) error
 	PerformHealthCheck(container *ContainerInfo) bool
-	SyncContainers(newConfigs, oldConfigs []ContainerConfig) error
+	SyncContainers(newConfigs, oldConfigs []ContainerConfig) (bool, error)
 	CheckContainerDrift(configs []ContainerConfig) (bool, []ContainerConfig)
 }
 
@@ -180,8 +180,8 @@ type PackageManager interface {
 	RemovePackage(packageName string) error
 	EnsurePackagesInstalled(packages []string) error
 	EnsureCustomPackagesInstalled(packages map[string]CustomPackage) error
-	SyncPackages(newPackages, oldPackages []string) error
-	SyncCustomPackages(newPackages, oldPackages map[string]CustomPackage) error
+	SyncPackages(newPackages, oldPackages []string) (bool, error)
+	SyncCustomPackages(newPackages, oldPackages map[string]CustomPackage) (bool, error)
 	CheckPackageDrift(packages []string) (bool, []string)
 	CheckCustomPackageDrift(packages map[string]CustomPackage) (bool, map[string]CustomPackage)
 }

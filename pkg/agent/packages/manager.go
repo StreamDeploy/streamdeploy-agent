@@ -178,7 +178,7 @@ func (m *Manager) EnsureCustomPackagesInstalled(packages map[string]types.Custom
 }
 
 // SyncPackages synchronizes system packages based on new and old configurations
-func (m *Manager) SyncPackages(newPackages, oldPackages []string) error {
+func (m *Manager) SyncPackages(newPackages, oldPackages []string) (bool, error) {
 	// Check if there are any actual changes needed
 	hasChanges := false
 
@@ -214,7 +214,7 @@ func (m *Manager) SyncPackages(newPackages, oldPackages []string) error {
 
 	// If no changes needed, return early
 	if !hasChanges {
-		return nil
+		return false, nil
 	}
 
 	m.logger.Info("Synchronizing system packages")
@@ -246,15 +246,15 @@ func (m *Manager) SyncPackages(newPackages, oldPackages []string) error {
 
 	// Return error if any packages failed to install
 	if len(installErrors) > 0 {
-		return fmt.Errorf("failed to install some packages: %s", strings.Join(installErrors, "; "))
+		return true, fmt.Errorf("failed to install some packages: %s", strings.Join(installErrors, "; "))
 	}
 
 	m.logger.Info("System package synchronization completed")
-	return nil
+	return true, nil
 }
 
 // SyncCustomPackages synchronizes custom packages based on new and old configurations
-func (m *Manager) SyncCustomPackages(newPackages, oldPackages map[string]types.CustomPackage) error {
+func (m *Manager) SyncCustomPackages(newPackages, oldPackages map[string]types.CustomPackage) (bool, error) {
 	// Check if there are any actual changes needed
 	hasChanges := false
 
@@ -279,7 +279,7 @@ func (m *Manager) SyncCustomPackages(newPackages, oldPackages map[string]types.C
 
 	// If no changes needed, return early
 	if !hasChanges {
-		return nil
+		return false, nil
 	}
 
 	m.logger.Info("Synchronizing custom packages")
@@ -302,7 +302,7 @@ func (m *Manager) SyncCustomPackages(newPackages, oldPackages map[string]types.C
 			// New package, install it
 			m.logger.Infof("Installing new custom package: %s", name)
 			if err := m.executeCommand(pkg.Install, "install"); err != nil {
-				return fmt.Errorf("failed to install new custom package %s: %w", name, err)
+				return true, fmt.Errorf("failed to install new custom package %s: %w", name, err)
 			}
 		} else if !m.customPackagesEqual(oldPkg, pkg) {
 			// Package configuration changed, reinstall
@@ -311,21 +311,21 @@ func (m *Manager) SyncCustomPackages(newPackages, oldPackages map[string]types.C
 				m.logger.Errorf("Failed to uninstall old version of %s: %v", name, err)
 			}
 			if err := m.executeCommand(pkg.Install, "install"); err != nil {
-				return fmt.Errorf("failed to install updated custom package %s: %w", name, err)
+				return true, fmt.Errorf("failed to install updated custom package %s: %w", name, err)
 			}
 		} else {
 			// Package unchanged, just ensure it's installed
 			if !m.isCustomPackageInstalled(name, pkg) {
 				m.logger.Infof("Reinstalling custom package: %s", name)
 				if err := m.executeCommand(pkg.Install, "install"); err != nil {
-					return fmt.Errorf("failed to reinstall custom package %s: %w", name, err)
+					return true, fmt.Errorf("failed to reinstall custom package %s: %w", name, err)
 				}
 			}
 		}
 	}
 
 	m.logger.Info("Custom package synchronization completed")
-	return nil
+	return true, nil
 }
 
 // isCustomPackageInstalled checks if a custom package is installed
