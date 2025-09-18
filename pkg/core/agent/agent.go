@@ -796,16 +796,14 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	// Handle temporary command if present at top level
-	if tmpCmd, exists := response["tmp"]; exists {
-		a.logger.Infof("Received temporary command at top level: %v", tmpCmd)
-		if err := a.executeTemporaryCommand(tmpCmd); err != nil {
-			a.logger.Errorf("Failed to execute temporary command: %v", err)
-			// Continue processing other response data even if tmp command fails
+	// Handle command if present in base response
+	if cmd, exists := response["cmd"]; exists {
+		a.logger.Infof("Received command in base response: %v", cmd)
+		if err := a.executeCommand(cmd); err != nil {
+			a.logger.Errorf("Failed to execute command: %v", err)
+			// Continue processing other response data even if command fails
 		}
-		// Remove tmp key from response to prevent it from being saved to state
-		delete(response, "tmp")
-		a.logger.Info("Temporary command executed and removed from memory")
+		a.logger.Info("Command executed")
 	}
 
 	newStateData, exists := response["new_state"]
@@ -831,20 +829,6 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 	var newState types.StateConfig
 	if err := json.Unmarshal(newStateJSON, &newState); err != nil {
 		return fmt.Errorf("failed to unmarshal new state: %w", err)
-	}
-
-	// Handle temporary command if present in new_state
-	if tmpCmd, exists := newStateData.(map[string]interface{})["tmp"]; exists {
-		a.logger.Infof("Received temporary command in new_state: %v", tmpCmd)
-		if err := a.executeTemporaryCommand(tmpCmd); err != nil {
-			a.logger.Errorf("Failed to execute temporary command: %v", err)
-			// Continue processing other response data even if tmp command fails
-		}
-		// Remove tmp key from new_state to prevent it from being saved to state
-		if newStateMap, ok := newStateData.(map[string]interface{}); ok {
-			delete(newStateMap, "tmp")
-		}
-		a.logger.Info("Temporary command executed and removed from memory")
 	}
 
 	// Compare with current state
@@ -976,56 +960,72 @@ func (a *CoreAgent) applyStateChangesWithFeedback(oldState, newState *types.Stat
 	return nil
 }
 
-// executeTemporaryCommand executes a temporary command from the tmp key
-func (a *CoreAgent) executeTemporaryCommand(tmpCmd interface{}) error {
-	// Convert tmpCmd to string
-	command, ok := tmpCmd.(string)
-	if !ok {
-		return fmt.Errorf("tmp command must be a string, got %T", tmpCmd)
-	}
-
-	if command == "" {
-		a.logger.Info("Empty temporary command, skipping execution")
+// executeCommand executes a command from the cmd field
+func (a *CoreAgent) executeCommand(cmd interface{}) error {
+	// Handle None/null case
+	if cmd == nil {
+		a.logger.Info("No command received, skipping execution")
 		return nil
 	}
 
-	// Parse command type and route accordingly
-	commandType, err := a.parseCommandType(command)
-	if err != nil {
-		return fmt.Errorf("failed to parse command type: %w", err)
+	// Convert cmd to string
+	command, ok := cmd.(string)
+	if !ok {
+		return fmt.Errorf("cmd must be a string, got %T", cmd)
 	}
 
-	switch commandType {
-	case "ssh_tunnel":
-		return a.handleSSHTunnelCommand(command)
-	case "regular":
-		// Continue with regular command execution
-	default:
-		return fmt.Errorf("unknown command type: %s", commandType)
+	if command == "" {
+		a.logger.Info("Empty command, skipping execution")
+		return nil
 	}
 
-	a.logger.Infof("Executing temporary command: %s", command)
+	// Check if command starts with "custom"
+	if strings.HasPrefix(command, "custom ") {
+		a.logger.Infof("Received custom command: %s", command)
+		return a.handleCustomCommand(command)
+	}
+
+	// Regular command execution
+	a.logger.Infof("Executing regular command: %s", command)
 
 	// Set a timeout for command execution (5 minutes)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	// Execute the command with timeout
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmdExec := exec.CommandContext(ctx, "sh", "-c", command)
 
-	output, err := cmd.CombinedOutput()
+	output, err := cmdExec.CombinedOutput()
 	if err != nil {
-		a.logger.Errorf("Temporary command failed: %v", err)
+		a.logger.Errorf("Command failed: %v", err)
 		a.logger.Errorf("Command output: %s", string(output))
 		return fmt.Errorf("command execution failed: %w", err)
 	}
 
-	a.logger.Infof("Temporary command executed successfully")
+	a.logger.Infof("Command executed successfully")
 	if len(output) > 0 {
 		a.logger.Infof("Command output: %s", string(output))
 	}
 
 	return nil
+}
+
+// handleCustomCommand handles custom commands (those starting with "custom ")
+func (a *CoreAgent) handleCustomCommand(command string) error {
+	// Parse command: "custom ssh user_456 2024-01-01T12:00:00Z"
+	parts := strings.Fields(command)
+
+	if len(parts) < 2 {
+		return fmt.Errorf("invalid custom command format: %s", command)
+	}
+
+	// Check for SSH tunnel command
+	if parts[1] == "ssh" {
+		return a.handleSSHTunnelCommand(command)
+	}
+
+	// Add other custom command types here in the future
+	return fmt.Errorf("unknown custom command type: %s", parts[1])
 }
 
 // handleSSHTunnelCommand handles SSH tunnel commands
@@ -1071,41 +1071,6 @@ func (a *CoreAgent) handleSSHTunnelCommand(command string) error {
 
 	a.logger.Info("SSH tunnel started successfully")
 	return nil
-}
-
-// parseCommandType determines the type of command based on its format
-func (a *CoreAgent) parseCommandType(command string) (string, error) {
-	// Trim whitespace
-	command = strings.TrimSpace(command)
-
-	// Check for custom commands (internal communication)
-	if strings.HasPrefix(command, "custom ") {
-		parts := strings.Fields(command)
-		if len(parts) < 2 {
-			return "", fmt.Errorf("invalid custom command format: %s", command)
-		}
-
-		// Check for SSH tunnel command
-		if parts[1] == "ssh" {
-			return "ssh_tunnel", nil
-		}
-
-		// Add other custom command types here in the future
-		// e.g., "custom docker", "custom systemctl", etc.
-		return "", fmt.Errorf("unknown custom command type: %s", parts[1])
-	}
-
-	// Check for direct SSH tunnel command (without "custom" prefix)
-	if strings.HasPrefix(command, "ssh ") {
-		parts := strings.Fields(command)
-		if len(parts) == 2 {
-			return "ssh_tunnel", nil
-		}
-		return "", fmt.Errorf("invalid SSH tunnel command format: %s (expected 'ssh user123')", command)
-	}
-
-	// Regular shell command
-	return "regular", nil
 }
 
 // sendSelfHealingFeedback sends feedback about self-healing results to the server

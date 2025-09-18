@@ -10,12 +10,12 @@ The SSH tunnel feature allows secure remote access to devices through the Stream
 
 ### Command Format
 
-The SSH tunnel is initiated via a temporary command in the status update response:
+The SSH tunnel is initiated via a command in the base response:
 
 ```json
 {
+  "cmd": "custom ssh user_456 2024-01-01T12:00:00Z",
   "new_state": {
-    "tmp": "custom ssh user_456 2024-01-01T12:00:00Z",
     "schemaVersion": "1.0",
     "agent_setting": { ... },
     "containers": [ ... ],
@@ -35,7 +35,7 @@ Where:
 
 ## Command Type Determination
 
-The agent determines how to handle the `tmp` command based on its format:
+The agent determines how to handle the `cmd` command based on its format:
 
 ### Custom Commands (Internal Communication)
 Commands starting with `"custom "` are treated as internal communication:
@@ -124,8 +124,8 @@ The tunnel uses JSON frames over WebSocket:
 #### SSH Tunnel Commands
 ```json
 {
+  "cmd": "custom ssh user_123 2024-12-31T23:59:59Z",
   "new_state": {
-    "tmp": "custom ssh user_123 2024-12-31T23:59:59Z",
     ...
   }
 }
@@ -134,8 +134,8 @@ The tunnel uses JSON frames over WebSocket:
 #### Regular Shell Commands
 ```json
 {
+  "cmd": "systemctl restart nginx",
   "new_state": {
-    "tmp": "systemctl restart nginx",
     ...
   }
 }
@@ -143,8 +143,8 @@ The tunnel uses JSON frames over WebSocket:
 
 ```json
 {
+  "cmd": "docker ps -a && docker logs nginx-container",
   "new_state": {
-    "tmp": "docker ps -a && docker logs nginx-container",
     ...
   }
 }
@@ -157,8 +157,8 @@ The tunnel uses JSON frames over WebSocket:
    curl -X POST https://api.streamdeploy.com/v1-device/status-update \
      -H "Authorization: Bearer $TOKEN" \
      -d '{
+       "cmd": "custom ssh user_123 2024-12-31T23:59:59Z",
        "new_state": {
-         "tmp": "custom ssh user_123 2024-12-31T23:59:59Z",
          "schemaVersion": "1.0",
          "agent_setting": { ... }
        }

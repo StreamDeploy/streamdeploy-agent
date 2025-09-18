@@ -142,7 +142,7 @@ func setupFullGoComponents(coreAgent *agent.CoreAgent, configPath string) error 
 	logger.Info("Environment manager configured")
 
 	// Set up package manager
-	packageManager := packages.NewManager(utils.NewLogger("PACKAGE"))
+	packageManager := packages.NewManager(utils.NewLogger("PACKAGE"), &deviceConfig.PackageManager)
 	coreAgent.SetPackageManager(packageManager)
 	logger.Info("Package manager configured")
 
@@ -160,14 +160,15 @@ func setupFullGoComponents(coreAgent *agent.CoreAgent, configPath string) error 
 
 // DeviceConfig represents the device configuration (simplified)
 type DeviceConfig struct {
-	DeviceID           string `json:"device_id"`
-	EnrollBaseURL      string `json:"enroll_base_url"`
-	HTTPSMTLSEndpoint  string `json:"https_mtls_endpoint"`
-	MQTTWSMTLSEndpoint string `json:"mqtt_ws_mtls_endpoint"`
-	PKIDir             string `json:"pki_dir"`
-	OSName             string `json:"os_name"`
-	OSVersion          string `json:"os_version"`
-	Architecture       string `json:"architecture"`
+	DeviceID           string                     `json:"device_id"`
+	EnrollBaseURL      string                     `json:"enroll_base_url"`
+	HTTPSMTLSEndpoint  string                     `json:"https_mtls_endpoint"`
+	MQTTWSMTLSEndpoint string                     `json:"mqtt_ws_mtls_endpoint"`
+	PKIDir             string                     `json:"pki_dir"`
+	OSName             string                     `json:"os_name"`
+	OSVersion          string                     `json:"os_version"`
+	Architecture       string                     `json:"architecture"`
+	PackageManager     types.PackageManagerConfig `json:"package_manager"`
 }
 
 // createCertificateManager creates a certificate manager instance

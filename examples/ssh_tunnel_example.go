@@ -129,11 +129,11 @@ func (m *mockMQTTClient) PublishHeartbeat(payload *types.HeartbeatPayload) error
 func (m *mockMQTTClient) PublishStatusUpdate(payload *types.StatusUpdatePayload) error { return nil }
 func (m *mockMQTTClient) Subscribe(topic string, callback func([]byte)) error          { return nil }
 
-// Example of how the tmp command would be processed:
+// Example of how the cmd command would be processed:
 // When the agent receives a status update with:
 // {
+//   "cmd": "custom ssh user_456 2024-01-01T12:00:00Z",
 //   "new_state": {
-//     "tmp": "custom ssh user_456 2024-01-01T12:00:00Z",
 //     "schemaVersion": "1.0",
 //     "agent_setting": { ... },
 //     "containers": [ ... ],
@@ -149,4 +149,4 @@ func (m *mockMQTTClient) Subscribe(topic string, callback func([]byte)) error   
 // 2. Start an SSH tunnel for user_456 that expires at 2024-01-01T12:00:00Z
 // 3. Connect to wss://device.streamdeploy.com/v1-device/tunnel
 // 4. Handle tunnel messages for SSH forwarding
-// 5. Remove the "tmp" key from the response before saving state
+// 5. The cmd field is processed separately from new_state and not saved to state

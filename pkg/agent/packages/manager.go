@@ -11,19 +11,26 @@ import (
 
 // Manager implements the PackageManager interface
 type Manager struct {
-	logger types.Logger
+	logger         types.Logger
+	packageManager *types.PackageManagerConfig
 }
 
 // NewManager creates a new package manager
-func NewManager(logger types.Logger) *Manager {
+func NewManager(logger types.Logger, packageManager *types.PackageManagerConfig) *Manager {
 	return &Manager{
-		logger: logger,
+		logger:         logger,
+		packageManager: packageManager,
 	}
 }
 
 // IsPackageInstalled checks if a system package is installed
 func (m *Manager) IsPackageInstalled(packageName string) bool {
-	// Try common package managers
+	// Use configured package manager if available
+	if m.packageManager != nil && m.packageManager.CheckCmd != "" {
+		return m.checkWithConfiguredPackageManager(packageName)
+	}
+
+	// Fallback to auto-detection if no configuration available
 	packageManagers := []string{"dpkg", "rpm", "apk", "pacman"}
 
 	for _, pm := range packageManagers {
@@ -33,6 +40,26 @@ func (m *Manager) IsPackageInstalled(packageName string) bool {
 	}
 
 	return false
+}
+
+// checkWithConfiguredPackageManager checks if package is installed using configured package manager
+func (m *Manager) checkWithConfiguredPackageManager(packageName string) bool {
+	// Use the configured check command
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("%s %s", m.packageManager.CheckCmd, packageName))
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	// For dpkg, check if the package is installed and configured
+	if m.packageManager.Type == "apt" {
+		outputStr := strings.ToLower(string(output))
+		return strings.Contains(outputStr, "status: install ok installed") &&
+			strings.Contains(outputStr, strings.ToLower(packageName))
+	}
+
+	// For other package managers, check if package name appears in output
+	return strings.Contains(strings.ToLower(string(output)), strings.ToLower(packageName))
 }
 
 // checkWithPackageManager checks if package is installed using specific package manager
@@ -79,17 +106,27 @@ func (m *Manager) InstallPackage(packageName string) error {
 
 	m.logger.Infof("Installing system package: %s", packageName)
 
-	// Detect package manager and install
-	installCmd := m.detectInstallCommand()
-	if installCmd == "" {
-		return fmt.Errorf("no supported package manager found")
+	// Use configured package manager if available
+	var installCmd string
+	if m.packageManager != nil && m.packageManager.InstallCmd != "" {
+		installCmd = m.packageManager.InstallCmd
+		m.logger.Infof("Using configured package manager: %s", m.packageManager.Type)
+	} else {
+		// Fallback to auto-detection
+		installCmd = m.detectInstallCommand()
+		if installCmd == "" {
+			return fmt.Errorf("no supported package manager found")
+		}
+		m.logger.Info("Using auto-detected package manager")
 	}
 
-	// Construct the full command with package name first
+	// Construct the full command with package name
 	fullCmd := fmt.Sprintf("%s %s", installCmd, packageName)
 
 	// Handle read-only filesystem for APT-based systems
-	if strings.Contains(installCmd, "apt-get") {
+	if m.packageManager != nil && m.packageManager.Type == "apt" {
+		fullCmd = m.wrapAptCommand(fullCmd)
+	} else if strings.Contains(installCmd, "apt-get") {
 		fullCmd = m.wrapAptCommand(fullCmd)
 	}
 
@@ -115,17 +152,27 @@ func (m *Manager) RemovePackage(packageName string) error {
 		return nil
 	}
 
-	// Detect package manager and remove
-	removeCmd := m.detectRemoveCommand()
-	if removeCmd == "" {
-		return fmt.Errorf("no supported package manager found")
+	// Use configured package manager if available
+	var removeCmd string
+	if m.packageManager != nil && m.packageManager.RemoveCmd != "" {
+		removeCmd = m.packageManager.RemoveCmd
+		m.logger.Infof("Using configured package manager: %s", m.packageManager.Type)
+	} else {
+		// Fallback to auto-detection
+		removeCmd = m.detectRemoveCommand()
+		if removeCmd == "" {
+			return fmt.Errorf("no supported package manager found")
+		}
+		m.logger.Info("Using auto-detected package manager")
 	}
 
-	// Construct the full command with package name first
+	// Construct the full command with package name
 	fullCmd := fmt.Sprintf("%s %s", removeCmd, packageName)
 
 	// Handle read-only filesystem for APT-based systems
-	if strings.Contains(removeCmd, "apt-get") {
+	if m.packageManager != nil && m.packageManager.Type == "apt" {
+		fullCmd = m.wrapAptCommand(fullCmd)
+	} else if strings.Contains(removeCmd, "apt-get") {
 		fullCmd = m.wrapAptCommand(fullCmd)
 	}
 
