@@ -146,7 +146,8 @@ func (m *Manager) PerformHealthCheck(container *types.ContainerInfo) bool {
 
 // SyncContainers synchronizes containers based on new and old configurations
 func (m *Manager) SyncContainers(newConfigs, oldConfigs []types.ContainerConfig) error {
-	m.logger.Info("Synchronizing containers")
+	// Check if there are any actual changes needed
+	hasChanges := false
 
 	// Create maps for easier lookup
 	newConfigMap := make(map[string]types.ContainerConfig)
@@ -159,6 +160,32 @@ func (m *Manager) SyncContainers(newConfigs, oldConfigs []types.ContainerConfig)
 	for _, config := range oldConfigs {
 		oldConfigMap[config.Name] = config
 	}
+
+	// Check for containers to remove
+	for name := range oldConfigMap {
+		if _, exists := newConfigMap[name]; !exists {
+			hasChanges = true
+			break
+		}
+	}
+
+	// Check for containers to add or update
+	if !hasChanges {
+		for name, newConfig := range newConfigMap {
+			oldConfig, exists := oldConfigMap[name]
+			if !exists || !m.configsEqual(oldConfig, newConfig) {
+				hasChanges = true
+				break
+			}
+		}
+	}
+
+	// If no changes needed, return early
+	if !hasChanges {
+		return nil
+	}
+
+	m.logger.Info("Synchronizing containers")
 
 	// Stop and remove containers that are no longer needed
 	for name := range oldConfigMap {
@@ -348,6 +375,36 @@ func (m *Manager) configsEqual(a, b types.ContainerConfig) bool {
 	}
 
 	return true
+}
+
+// CheckContainerDrift checks if containers are in the desired state without logging synchronization messages
+func (m *Manager) CheckContainerDrift(configs []types.ContainerConfig) (bool, []types.ContainerConfig) {
+	var driftedContainers []types.ContainerConfig
+
+	for _, config := range configs {
+		// Check if container is running
+		if !m.IsContainerRunning(config.Name) {
+			driftedContainers = append(driftedContainers, config)
+			continue
+		}
+
+		// If health path is provided, perform health check
+		if config.HealthPath != "" && config.Port > 0 {
+			containerInfo := &types.ContainerInfo{
+				Name:       config.Name,
+				Image:      config.Image,
+				Port:       config.Port,
+				HealthPath: config.HealthPath,
+				Running:    true,
+			}
+
+			if !m.PerformHealthCheck(containerInfo) {
+				driftedContainers = append(driftedContainers, config)
+			}
+		}
+	}
+
+	return len(driftedContainers) > 0, driftedContainers
 }
 
 // PullImage pulls a Docker image

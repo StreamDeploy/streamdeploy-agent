@@ -179,7 +179,8 @@ func (m *Manager) EnsureCustomPackagesInstalled(packages map[string]types.Custom
 
 // SyncPackages synchronizes system packages based on new and old configurations
 func (m *Manager) SyncPackages(newPackages, oldPackages []string) error {
-	m.logger.Info("Synchronizing system packages")
+	// Check if there are any actual changes needed
+	hasChanges := false
 
 	// Create maps for easier lookup
 	newPackageMap := make(map[string]bool)
@@ -192,6 +193,31 @@ func (m *Manager) SyncPackages(newPackages, oldPackages []string) error {
 	for _, pkg := range oldPackages {
 		oldPackageMap[pkg] = true
 	}
+
+	// Check for packages to remove
+	for pkg := range oldPackageMap {
+		if !newPackageMap[pkg] {
+			hasChanges = true
+			break
+		}
+	}
+
+	// Check for packages to add
+	if !hasChanges {
+		for pkg := range newPackageMap {
+			if !oldPackageMap[pkg] {
+				hasChanges = true
+				break
+			}
+		}
+	}
+
+	// If no changes needed, return early
+	if !hasChanges {
+		return nil
+	}
+
+	m.logger.Info("Synchronizing system packages")
 
 	// Remove packages that are no longer needed
 	for pkg := range oldPackageMap {
@@ -229,6 +255,33 @@ func (m *Manager) SyncPackages(newPackages, oldPackages []string) error {
 
 // SyncCustomPackages synchronizes custom packages based on new and old configurations
 func (m *Manager) SyncCustomPackages(newPackages, oldPackages map[string]types.CustomPackage) error {
+	// Check if there are any actual changes needed
+	hasChanges := false
+
+	// Check for packages to remove
+	for name := range oldPackages {
+		if _, exists := newPackages[name]; !exists {
+			hasChanges = true
+			break
+		}
+	}
+
+	// Check for packages to add or update
+	if !hasChanges {
+		for name, pkg := range newPackages {
+			oldPkg, exists := oldPackages[name]
+			if !exists || !m.customPackagesEqual(oldPkg, pkg) {
+				hasChanges = true
+				break
+			}
+		}
+	}
+
+	// If no changes needed, return early
+	if !hasChanges {
+		return nil
+	}
+
 	m.logger.Info("Synchronizing custom packages")
 
 	// Remove packages that are no longer needed
@@ -404,4 +457,33 @@ func (m *Manager) isReadOnlyFilesystem() bool {
 	}
 
 	return false // Filesystem appears to be writable
+}
+
+// CheckPackageDrift checks if system packages are in the desired state without logging synchronization messages
+func (m *Manager) CheckPackageDrift(packages []string) (bool, []string) {
+	var missingPackages []string
+
+	for _, pkg := range packages {
+		if !m.IsPackageInstalled(pkg) {
+			missingPackages = append(missingPackages, pkg)
+		}
+	}
+
+	return len(missingPackages) > 0, missingPackages
+}
+
+// CheckCustomPackageDrift checks if custom packages are in the desired state without logging synchronization messages
+func (m *Manager) CheckCustomPackageDrift(packages map[string]types.CustomPackage) (bool, map[string]types.CustomPackage) {
+	var missingPackages map[string]types.CustomPackage
+
+	for name, pkg := range packages {
+		if !m.isCustomPackageInstalled(name, pkg) {
+			if missingPackages == nil {
+				missingPackages = make(map[string]types.CustomPackage)
+			}
+			missingPackages[name] = pkg
+		}
+	}
+
+	return len(missingPackages) > 0, missingPackages
 }

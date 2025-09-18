@@ -170,6 +170,7 @@ type ContainerManager interface {
 	EnsureContainersRunning(configs []ContainerConfig) error
 	PerformHealthCheck(container *ContainerInfo) bool
 	SyncContainers(newConfigs, oldConfigs []ContainerConfig) error
+	CheckContainerDrift(configs []ContainerConfig) (bool, []ContainerConfig)
 }
 
 // PackageManager interface for package management
@@ -181,6 +182,8 @@ type PackageManager interface {
 	EnsureCustomPackagesInstalled(packages map[string]CustomPackage) error
 	SyncPackages(newPackages, oldPackages []string) error
 	SyncCustomPackages(newPackages, oldPackages map[string]CustomPackage) error
+	CheckPackageDrift(packages []string) (bool, []string)
+	CheckCustomPackageDrift(packages map[string]CustomPackage) (bool, map[string]CustomPackage)
 }
 
 // CertificateManager interface for certificate management

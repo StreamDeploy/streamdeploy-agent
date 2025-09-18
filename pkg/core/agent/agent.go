@@ -630,13 +630,7 @@ func (a *CoreAgent) verifyAndCorrectSystemStateWithFeedback(state *types.StateCo
 		// Continue with other verifications
 	}
 
-	// Verify custom packages
-	if err := a.verifyCustomPackages(state); err != nil {
-		a.logger.Errorf("Custom package verification failed: %v", err)
-		result.Success = false
-		result.Errors[string(TaskCustomPackages)] = err.Error()
-		// Continue with other verifications
-	}
+	// Custom packages are now verified as part of verifyPackages
 
 	// Verify environment variables
 	if err := a.verifyEnvironmentVariables(state); err != nil {
@@ -670,10 +664,18 @@ func (a *CoreAgent) verifyContainers(state *types.StateConfig) error {
 		return nil
 	}
 
-	a.logger.Info("Verifying container state...")
+	// Check for drift first without logging synchronization messages
+	hasDrift, driftedContainers := a.containerManager.CheckContainerDrift(state.Containers)
 
-	// Check each container in the state
-	for _, containerConfig := range state.Containers {
+	if !hasDrift {
+		a.logger.Info("All containers are in desired state, no corrections needed")
+		return nil
+	}
+
+	a.logger.Infof("Container drift detected for %d containers, applying corrections...", len(driftedContainers))
+
+	// Apply corrections only for drifted containers
+	for _, containerConfig := range driftedContainers {
 		containerName := containerConfig.Name
 
 		// Check if container is running
@@ -688,21 +690,8 @@ func (a *CoreAgent) verifyContainers(state *types.StateConfig) error {
 
 			a.logger.Infof("Container %s started successfully", containerName)
 		} else {
-			a.logger.Infof("Container %s is running", containerName)
-
-			// Perform health check
-			containerInfo := &types.ContainerInfo{
-				Name:       containerConfig.Name,
-				Image:      containerConfig.Image,
-				Port:       containerConfig.Port,
-				HealthPath: containerConfig.HealthPath,
-				Running:    true,
-			}
-
-			if !a.containerManager.PerformHealthCheck(containerInfo) {
-				a.logger.Infof("Health check failed for container %s", containerName)
-				// Could restart the container here if needed
-			}
+			a.logger.Infof("Container %s health check failed, may need restart", containerName)
+			// Could restart the container here if needed
 		}
 	}
 
@@ -721,53 +710,38 @@ func (a *CoreAgent) verifyPackages(state *types.StateConfig) error {
 		return nil
 	}
 
-	a.logger.Info("Verifying package state...")
-
-	// Ensure all packages are installed
+	// Check for system package drift first
 	if len(state.Packages) > 0 {
-		a.logger.Info("Ensuring system packages are installed...")
-		if err := a.packageManager.EnsurePackagesInstalled(state.Packages); err != nil {
-			a.logger.Errorf("Failed to ensure packages are installed: %v", err)
+		hasDrift, missingPackages := a.packageManager.CheckPackageDrift(state.Packages)
+
+		if !hasDrift {
+			a.logger.Info("All system packages are installed, no corrections needed")
 		} else {
-			a.logger.Info("System packages verified successfully")
+			a.logger.Infof("System package drift detected for %d packages, installing missing packages...", len(missingPackages))
+			if err := a.packageManager.EnsurePackagesInstalled(missingPackages); err != nil {
+				a.logger.Errorf("Failed to install missing packages: %v", err)
+			} else {
+				a.logger.Info("Missing system packages installed successfully")
+			}
 		}
 	}
 
-	// Ensure all custom packages are installed
+	// Check for custom package drift
 	if len(state.CustomPackages) > 0 {
-		a.logger.Info("Ensuring custom packages are installed...")
-		if err := a.packageManager.EnsureCustomPackagesInstalled(state.CustomPackages); err != nil {
-			a.logger.Errorf("Failed to ensure custom packages are installed: %v", err)
+		hasDrift, missingPackages := a.packageManager.CheckCustomPackageDrift(state.CustomPackages)
+
+		if !hasDrift {
+			a.logger.Info("All custom packages are installed, no corrections needed")
 		} else {
-			a.logger.Info("Custom packages verified successfully")
+			a.logger.Infof("Custom package drift detected for %d packages, installing missing packages...", len(missingPackages))
+			if err := a.packageManager.EnsureCustomPackagesInstalled(missingPackages); err != nil {
+				a.logger.Errorf("Failed to install missing custom packages: %v", err)
+			} else {
+				a.logger.Info("Missing custom packages installed successfully")
+			}
 		}
 	}
 
-	return nil
-}
-
-// verifyCustomPackages checks if custom packages in the state are actually installed
-func (a *CoreAgent) verifyCustomPackages(state *types.StateConfig) error {
-	if a.packageManager == nil {
-		a.logger.Info("Package manager not available, skipping custom package verification")
-		return nil
-	}
-
-	if len(state.CustomPackages) == 0 {
-		a.logger.Info("No custom packages configured, skipping custom package verification")
-		return nil
-	}
-
-	a.logger.Info("Verifying custom package state...")
-
-	// Ensure all custom packages are installed
-	a.logger.Info("Ensuring custom packages are installed...")
-	if err := a.packageManager.EnsureCustomPackagesInstalled(state.CustomPackages); err != nil {
-		a.logger.Errorf("Failed to ensure custom packages are installed: %v", err)
-		return err
-	}
-
-	a.logger.Info("Custom packages verified successfully")
 	return nil
 }
 
@@ -836,7 +810,16 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 
 	newStateData, exists := response["new_state"]
 	if !exists {
-		return nil // No new state
+		// No new state received, but still perform drift detection
+		a.logger.Info("No new state received, performing drift detection...")
+		currentState := a.configManager.GetStateConfig()
+		if currentState != nil {
+			if err := a.verifyAndCorrectSystemStateWithFeedback(currentState, "api"); err != nil {
+				a.logger.Errorf("Drift detection failed: %v", err)
+				return err
+			}
+		}
+		return nil
 	}
 
 	// Convert to JSON and back to StateConfig
@@ -877,6 +860,13 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 		// Apply state changes with feedback tracking
 		if err := a.applyStateChangesWithFeedback(currentState, &newState, "api"); err != nil {
 			a.logger.Errorf("Failed to apply state changes: %v", err)
+		}
+	} else {
+		// State is the same, but still perform drift detection
+		a.logger.Info("State configuration unchanged, performing drift detection...")
+		if err := a.verifyAndCorrectSystemStateWithFeedback(&newState, "api"); err != nil {
+			a.logger.Errorf("Drift detection failed: %v", err)
+			return err
 		}
 	}
 
