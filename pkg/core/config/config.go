@@ -65,6 +65,15 @@ func (m *Manager) UpdateStateConfig(config *types.StateConfig) error {
 	m.updatingState = true
 	m.updatingMutex.Unlock()
 
+	// Check if this is an empty state (backend returned {} meaning no change)
+	if isStateConfigEmpty(config) {
+		// Don't save empty states to avoid triggering file monitoring
+		m.updatingMutex.Lock()
+		m.updatingState = false
+		m.updatingMutex.Unlock()
+		return nil
+	}
+
 	// Ensure mode is never empty
 	if config.AgentSetting.Mode == "" {
 		config.AgentSetting.Mode = "http"
@@ -78,6 +87,31 @@ func (m *Manager) UpdateStateConfig(config *types.StateConfig) error {
 	m.updatingMutex.Unlock()
 
 	return err
+}
+
+// IsStateConfigEmpty checks if a state configuration is empty (no meaningful content)
+func (m *Manager) IsStateConfigEmpty(config *types.StateConfig) bool {
+	return isStateConfigEmpty(config)
+}
+
+// isStateConfigEmpty checks if a state configuration is empty (no meaningful content)
+func isStateConfigEmpty(config *types.StateConfig) bool {
+	if config == nil {
+		return true
+	}
+
+	// Check if all fields are empty or default
+	return config.SchemaVersion == "" &&
+		config.AgentSetting.HeartbeatFrequency == "" &&
+		config.AgentSetting.UpdateFrequency == "" &&
+		config.AgentSetting.Mode == "" &&
+		config.AgentSetting.AgentVer == "" &&
+		config.AgentSetting.LoggingLevel == "" &&
+		len(config.Containers) == 0 &&
+		len(config.Env) == 0 &&
+		len(config.Packages) == 0 &&
+		len(config.CustomMetrics) == 0 &&
+		len(config.CustomPackages) == 0
 }
 
 // SaveStateConfig saves the state configuration to disk

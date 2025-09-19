@@ -847,7 +847,7 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 		}
 
 		// Check if the new state is empty (backend returned {} meaning no change)
-		if !isStateConfigEmpty(&newState) {
+		if !a.configManager.IsStateConfigEmpty(&newState) {
 			hasStateChange = true
 			a.logger.Info("Received new state configuration")
 
@@ -1616,26 +1616,6 @@ func customPackageEqual(a, b types.CustomPackage) bool {
 	return a.Install == b.Install &&
 		a.Check == b.Check &&
 		a.Uninstall == b.Uninstall
-}
-
-// isStateConfigEmpty checks if a state configuration is empty (no meaningful content)
-func isStateConfigEmpty(config *types.StateConfig) bool {
-	if config == nil {
-		return true
-	}
-
-	// Check if all fields are empty or default
-	return config.SchemaVersion == "" &&
-		config.AgentSetting.HeartbeatFrequency == "" &&
-		config.AgentSetting.UpdateFrequency == "" &&
-		config.AgentSetting.Mode == "" &&
-		config.AgentSetting.AgentVer == "" &&
-		config.AgentSetting.LoggingLevel == "" &&
-		len(config.Containers) == 0 &&
-		len(config.Env) == 0 &&
-		len(config.Packages) == 0 &&
-		len(config.CustomMetrics) == 0 &&
-		len(config.CustomPackages) == 0
 }
 
 // logStateDiff logs a concise diff of two state configs when in debug mode

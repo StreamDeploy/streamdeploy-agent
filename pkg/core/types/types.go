@@ -134,6 +134,7 @@ type ConfigManager interface {
 	ReloadStateConfig() error
 	GetDeviceConfigPath() string
 	RestartMonitoring()
+	IsStateConfigEmpty(config *StateConfig) bool
 }
 
 // MetricsCollector interface for metrics collection
