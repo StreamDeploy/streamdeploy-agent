@@ -215,9 +215,11 @@ StandardOutput=journal
 StandardError=journal
 
 # Security settings
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
+NoNewPrivileges=false
+ProtectSystem=false
+ProtectHome=false
+# Prevent access to critical system files that could brick the device
+InaccessiblePaths=/boot /sys/firmware /proc/sys/kernel /proc/sysrq-trigger
 ReadWritePaths=/etc/streamdeploy /var/lib/streamdeploy /var/log
 
 # SSH tunnel specific settings

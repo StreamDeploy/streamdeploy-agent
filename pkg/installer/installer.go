@@ -1331,11 +1331,18 @@ TimeoutStopSec=30
 
 # systemd automatically sets INVOCATION_ID for service detection
 
-# Security settings
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/etc/streamdeploy /var/lib/streamdeploy /var/log
+# Security settings - permissive to allow agent full system access while preventing device bricking
+NoNewPrivileges=false
+ProtectSystem=false
+ProtectHome=false
+# Allow access to critical system paths but prevent modification of boot/kernel files
+PrivateTmp=false
+PrivateDevices=false
+ProtectKernelTunables=false
+ProtectKernelModules=false
+ProtectControlGroups=false
+# Prevent access to critical system files that could brick the device
+InaccessiblePaths=/boot /sys/firmware /proc/sys/kernel /proc/sysrq-trigger
 
 [Install]
 WantedBy=multi-user.target

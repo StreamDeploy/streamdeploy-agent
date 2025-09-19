@@ -222,13 +222,20 @@ The agent implements a secure self-installation process with multiple security l
 - **Automatic Renewal** - Built-in certificate renewal before expiration
 
 #### 3. **Systemd Security Settings**
-The systemd service includes security hardening:
+The systemd service includes permissive security settings to allow full system access while preventing device bricking:
 ```ini
-# Security settings
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/etc/streamdeploy /var/lib/streamdeploy /var/log
+# Security settings - permissive to allow agent full system access while preventing device bricking
+NoNewPrivileges=false
+ProtectSystem=false
+ProtectHome=false
+# Allow access to critical system paths but prevent modification of boot/kernel files
+PrivateTmp=false
+PrivateDevices=false
+ProtectKernelTunables=false
+ProtectKernelModules=false
+ProtectControlGroups=false
+# Prevent access to critical system files that could brick the device
+InaccessiblePaths=/boot /sys/firmware /proc/sys/kernel /proc/sysrq-trigger
 ```
 
 #### 4. **Bootstrap Token Security**
