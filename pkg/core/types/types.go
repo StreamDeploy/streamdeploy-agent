@@ -32,7 +32,6 @@ type StateConfig struct {
 	SchemaVersion  string                   `json:"schemaVersion"`
 	AgentSetting   AgentSetting             `json:"agent_setting"`
 	Containers     []ContainerConfig        `json:"containers"`
-	ContainerLogin string                   `json:"containerLogin"`
 	Env            map[string]string        `json:"env"`
 	Packages       []string                 `json:"packages"`
 	CustomMetrics  map[string]string        `json:"custom_metrics"`

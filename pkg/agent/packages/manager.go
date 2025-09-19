@@ -3,11 +3,56 @@ package packages
 import (
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/types"
 )
+
+// PackageInfo represents a parsed package with optional version
+type PackageInfo struct {
+	Name       string
+	Version    string
+	HasVersion bool
+}
+
+// parsePackageString parses a package string to extract name and version
+// Supports formats: "package", "package=version", "package version", "package==version"
+func parsePackageString(pkgStr string) PackageInfo {
+	pkgStr = strings.TrimSpace(pkgStr)
+
+	// Check for = format (package=version)
+	if strings.Contains(pkgStr, "=") {
+		parts := strings.SplitN(pkgStr, "=", 2)
+		if len(parts) == 2 {
+			return PackageInfo{
+				Name:       strings.TrimSpace(parts[0]),
+				Version:    strings.TrimSpace(parts[1]),
+				HasVersion: true,
+			}
+		}
+	}
+
+	// Check for space format (package version) - only if it looks like a version
+	// Use regex to detect if the second part looks like a version number
+	versionRegex := regexp.MustCompile(`^[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9]+)?$`)
+	parts := strings.Fields(pkgStr)
+	if len(parts) == 2 && versionRegex.MatchString(parts[1]) {
+		return PackageInfo{
+			Name:       parts[0],
+			Version:    parts[1],
+			HasVersion: true,
+		}
+	}
+
+	// No version specified, just package name
+	return PackageInfo{
+		Name:       pkgStr,
+		Version:    "",
+		HasVersion: false,
+	}
+}
 
 // Manager implements the PackageManager interface
 type Manager struct {
@@ -25,16 +70,19 @@ func NewManager(logger types.Logger, packageManager *types.PackageManagerConfig)
 
 // IsPackageInstalled checks if a system package is installed
 func (m *Manager) IsPackageInstalled(packageName string) bool {
+	// Parse the package string to extract name and version
+	pkgInfo := parsePackageString(packageName)
+
 	// Use configured package manager if available
 	if m.packageManager != nil && m.packageManager.CheckCmd != "" {
-		return m.checkWithConfiguredPackageManager(packageName)
+		return m.checkWithConfiguredPackageManager(pkgInfo)
 	}
 
 	// Fallback to auto-detection if no configuration available
 	packageManagers := []string{"dpkg", "rpm", "apk", "pacman"}
 
 	for _, pm := range packageManagers {
-		if m.checkWithPackageManager(pm, packageName) {
+		if m.checkWithPackageManager(pm, pkgInfo) {
 			return true
 		}
 	}
@@ -43,61 +91,217 @@ func (m *Manager) IsPackageInstalled(packageName string) bool {
 }
 
 // checkWithConfiguredPackageManager checks if package is installed using configured package manager
-func (m *Manager) checkWithConfiguredPackageManager(packageName string) bool {
-	// Use the configured check command
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("%s %s", m.packageManager.CheckCmd, packageName))
+func (m *Manager) checkWithConfiguredPackageManager(pkgInfo PackageInfo) bool {
+	// Use the configured check command with just the package name
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("%s %s", m.packageManager.CheckCmd, pkgInfo.Name))
 	output, err := cmd.Output()
 	if err != nil {
+		// If command fails, package is not installed
 		return false
 	}
 
-	// For dpkg, check if the package is installed and configured
-	if m.packageManager.Type == "apt" {
-		outputStr := strings.ToLower(string(output))
-		return strings.Contains(outputStr, "status: install ok installed") &&
-			strings.Contains(outputStr, strings.ToLower(packageName))
-	}
+	outputStr := strings.ToLower(string(output))
 
-	// For other package managers, check if package name appears in output
-	return strings.Contains(strings.ToLower(string(output)), strings.ToLower(packageName))
+	// Handle different package managers based on their expected output format
+	switch m.packageManager.Type {
+	case "apt":
+		// For dpkg -s, check if package is installed and configured
+		packageInstalled := strings.Contains(outputStr, "status: install ok installed") &&
+			strings.Contains(outputStr, strings.ToLower(pkgInfo.Name))
+
+		// If no version specified, just check if package is installed
+		if !pkgInfo.HasVersion {
+			return packageInstalled
+		}
+
+		// If version specified, check if the installed version matches
+		if packageInstalled {
+			return m.checkPackageVersion(outputStr, pkgInfo)
+		}
+		return false
+
+	case "yum", "dnf":
+		// For rpm -q, if package is installed, it returns the package name and version
+		// If not installed, it returns an error (handled above)
+		packageInstalled := strings.Contains(outputStr, strings.ToLower(pkgInfo.Name))
+
+		if !pkgInfo.HasVersion {
+			return packageInstalled
+		}
+
+		if packageInstalled {
+			return m.checkPackageVersion(outputStr, pkgInfo)
+		}
+		return false
+
+	case "apk":
+		// For apk info, if package is installed, it returns package info
+		// If not installed, it returns an error (handled above)
+		packageInstalled := strings.Contains(outputStr, strings.ToLower(pkgInfo.Name))
+
+		if !pkgInfo.HasVersion {
+			return packageInstalled
+		}
+
+		if packageInstalled {
+			return m.checkPackageVersion(outputStr, pkgInfo)
+		}
+		return false
+
+	case "pacman":
+		// For pacman -Q, if package is installed, it returns the package name and version
+		// If not installed, it returns an error (handled above)
+		packageInstalled := strings.Contains(outputStr, strings.ToLower(pkgInfo.Name))
+
+		if !pkgInfo.HasVersion {
+			return packageInstalled
+		}
+
+		if packageInstalled {
+			return m.checkPackageVersion(outputStr, pkgInfo)
+		}
+		return false
+
+	default:
+		// Fallback: check if package name appears in output
+		packageInstalled := strings.Contains(outputStr, strings.ToLower(pkgInfo.Name))
+
+		if !pkgInfo.HasVersion {
+			return packageInstalled
+		}
+
+		if packageInstalled {
+			return m.checkPackageVersion(outputStr, pkgInfo)
+		}
+		return false
+	}
 }
 
 // checkWithPackageManager checks if package is installed using specific package manager
-func (m *Manager) checkWithPackageManager(manager, packageName string) bool {
+func (m *Manager) checkWithPackageManager(manager string, pkgInfo PackageInfo) bool {
 	var cmd *exec.Cmd
 
 	switch manager {
 	case "dpkg":
 		// Use dpkg -s to check if package is installed and properly configured
-		cmd = exec.Command("dpkg", "-s", packageName)
+		cmd = exec.Command("dpkg", "-s", pkgInfo.Name)
 	case "rpm":
-		cmd = exec.Command("rpm", "-q", packageName)
+		cmd = exec.Command("rpm", "-q", pkgInfo.Name)
 	case "apk":
-		cmd = exec.Command("apk", "info", packageName)
+		cmd = exec.Command("apk", "info", pkgInfo.Name)
 	case "pacman":
-		cmd = exec.Command("pacman", "-Q", packageName)
+		cmd = exec.Command("pacman", "-Q", pkgInfo.Name)
 	default:
 		return false
 	}
 
 	output, err := cmd.Output()
 	if err != nil {
+		// If command fails, package is not installed
 		return false
 	}
 
-	// For dpkg, check if the package is installed and configured
-	if manager == "dpkg" {
-		outputStr := strings.ToLower(string(output))
-		return strings.Contains(outputStr, "status: install ok installed") &&
-			strings.Contains(outputStr, strings.ToLower(packageName))
+	outputStr := strings.ToLower(string(output))
+
+	// Handle different package managers based on their expected output format
+	switch manager {
+	case "dpkg":
+		// For dpkg -s, check if package is installed and configured
+		packageInstalled := strings.Contains(outputStr, "status: install ok installed") &&
+			strings.Contains(outputStr, strings.ToLower(pkgInfo.Name))
+
+		// If no version specified, just check if package is installed
+		if !pkgInfo.HasVersion {
+			return packageInstalled
+		}
+
+		// If version specified, check if the installed version matches
+		if packageInstalled {
+			return m.checkPackageVersion(outputStr, pkgInfo)
+		}
+		return false
+
+	case "rpm":
+		// For rpm -q, if package is installed, it returns the package name and version
+		// If not installed, it returns an error (handled above)
+		packageInstalled := strings.Contains(outputStr, strings.ToLower(pkgInfo.Name))
+
+		if !pkgInfo.HasVersion {
+			return packageInstalled
+		}
+
+		if packageInstalled {
+			return m.checkPackageVersion(outputStr, pkgInfo)
+		}
+		return false
+
+	case "apk":
+		// For apk info, if package is installed, it returns package info
+		// If not installed, it returns an error (handled above)
+		packageInstalled := strings.Contains(outputStr, strings.ToLower(pkgInfo.Name))
+
+		if !pkgInfo.HasVersion {
+			return packageInstalled
+		}
+
+		if packageInstalled {
+			return m.checkPackageVersion(outputStr, pkgInfo)
+		}
+		return false
+
+	case "pacman":
+		// For pacman -Q, if package is installed, it returns the package name and version
+		// If not installed, it returns an error (handled above)
+		packageInstalled := strings.Contains(outputStr, strings.ToLower(pkgInfo.Name))
+
+		if !pkgInfo.HasVersion {
+			return packageInstalled
+		}
+
+		if packageInstalled {
+			return m.checkPackageVersion(outputStr, pkgInfo)
+		}
+		return false
+
+	default:
+		// Fallback: check if package name appears in output
+		packageInstalled := strings.Contains(outputStr, strings.ToLower(pkgInfo.Name))
+
+		if !pkgInfo.HasVersion {
+			return packageInstalled
+		}
+
+		if packageInstalled {
+			return m.checkPackageVersion(outputStr, pkgInfo)
+		}
+		return false
+	}
+}
+
+// checkPackageVersion checks if the installed package version matches the required version
+func (m *Manager) checkPackageVersion(output string, pkgInfo PackageInfo) bool {
+	// Look for version information in the output
+	// This is a simple implementation - in practice, you might want more sophisticated version comparison
+	versionPattern := regexp.MustCompile(`version:\s*([^\s\n]+)`)
+	matches := versionPattern.FindStringSubmatch(output)
+
+	if len(matches) < 2 {
+		// If we can't find version info, assume it matches if package is installed
+		return true
 	}
 
-	// For other package managers, check if package name appears in output
-	return strings.Contains(strings.ToLower(string(output)), strings.ToLower(packageName))
+	installedVersion := strings.TrimSpace(matches[1])
+	requiredVersion := strings.TrimSpace(pkgInfo.Version)
+
+	// Simple string comparison - in practice, you might want semantic version comparison
+	return installedVersion == requiredVersion
 }
 
 // InstallPackage installs a system package
 func (m *Manager) InstallPackage(packageName string) error {
+	// Parse the package string to extract name and version
+	pkgInfo := parsePackageString(packageName)
+
 	// Check if package is already installed
 	if m.IsPackageInstalled(packageName) {
 		m.logger.Infof("Package %s is already installed, skipping installation", packageName)
@@ -120,8 +324,20 @@ func (m *Manager) InstallPackage(packageName string) error {
 		m.logger.Info("Using auto-detected package manager")
 	}
 
-	// Construct the full command with package name
-	fullCmd := fmt.Sprintf("%s %s", installCmd, packageName)
+	// Construct the full command with package name and version if specified
+	var fullCmd string
+	if pkgInfo.HasVersion {
+		// For versioned packages, use the format that the package manager expects
+		if m.packageManager != nil && m.packageManager.Type == "apt" {
+			fullCmd = fmt.Sprintf("%s %s=%s", installCmd, pkgInfo.Name, pkgInfo.Version)
+		} else {
+			// For other package managers, try the space format
+			fullCmd = fmt.Sprintf("%s %s %s", installCmd, pkgInfo.Name, pkgInfo.Version)
+		}
+	} else {
+		// No version specified, just install the package
+		fullCmd = fmt.Sprintf("%s %s", installCmd, pkgInfo.Name)
+	}
 
 	// Handle read-only filesystem for APT-based systems
 	if m.packageManager != nil && m.packageManager.Type == "apt" {
