@@ -801,12 +801,17 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 
 	// Handle command if present in base response
 	if cmd, exists := response["cmd"]; exists {
-		a.logger.Infof("Received command in base response: %v (type: %T)", cmd, cmd)
-		if err := a.executeCommand(cmd); err != nil {
-			a.logger.Errorf("Failed to execute command: %v", err)
-			// Continue processing other response data even if command fails
+		// Check if command is empty string - if so, skip logging and execution
+		if cmdStr, ok := cmd.(string); ok && cmdStr == "" {
+			// Empty command - no action needed, skip all logging and execution
+		} else {
+			a.logger.Infof("Received command in base response: %v (type: %T)", cmd, cmd)
+			if err := a.executeCommand(cmd); err != nil {
+				a.logger.Errorf("Failed to execute command: %v", err)
+				// Continue processing other response data even if command fails
+			}
+			a.logger.Info("Command executed")
 		}
-		a.logger.Info("Command executed")
 	} else {
 		a.logger.Info("No command field found in response")
 	}
@@ -990,7 +995,7 @@ func (a *CoreAgent) executeCommand(cmd interface{}) error {
 	}
 
 	if command == "" {
-		a.logger.Info("Empty command received - no action needed")
+		// Empty command - no action needed, return silently
 		return nil
 	}
 
