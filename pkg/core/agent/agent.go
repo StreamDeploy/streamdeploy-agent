@@ -799,27 +799,83 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 	// Debug: Log the full response structure for troubleshooting
 	a.logger.Infof("Received response with keys: %v", getMapKeys(response))
 
-	// Handle command if present in base response
-	if cmd, exists := response["cmd"]; exists {
-		// Check if command is empty string - if so, skip logging and execution
-		if cmdStr, ok := cmd.(string); ok && cmdStr == "" {
-			// Empty command - no action needed, skip all logging and execution
-		} else {
-			a.logger.Infof("Received command in base response: %v (type: %T)", cmd, cmd)
-			if err := a.executeCommand(cmd); err != nil {
-				a.logger.Errorf("Failed to execute command: %v", err)
-				// Continue processing other response data even if command fails
-			}
-			a.logger.Info("Command executed")
-		}
-	} else {
-		a.logger.Info("No command field found in response")
+	// Extract command and new_state from response
+	cmd, cmdExists := response["cmd"]
+	newStateData, stateExists := response["new_state"]
+
+	// Validate response format - both cmd and new_state should exist or both should be missing
+	if cmdExists != stateExists {
+		return fmt.Errorf("invalid response format: cmd and new_state must both be present or both be missing")
 	}
 
-	newStateData, exists := response["new_state"]
-	if !exists {
-		// No new state received, but still perform drift detection
-		a.logger.Info("No new state received, performing drift detection...")
+	// Handle the 4 possible combinations:
+	// 1. cmd="" and new_state={} - No change, no command
+	// 2. cmd="" and new_state={...} - State change only, no command
+	// 3. cmd="..." and new_state={} - Command only, no state change
+	// 4. cmd="..." and new_state={...} - Both command and state change
+
+	var hasCommand bool
+	var hasStateChange bool
+
+	// Check if we have a valid command
+	if cmdExists {
+		if cmdStr, ok := cmd.(string); ok && cmdStr != "" {
+			hasCommand = true
+			a.logger.Infof("Received command: %s", cmdStr)
+			if err := a.executeCommand(cmd); err != nil {
+				a.logger.Errorf("Failed to execute command: %v", err)
+				// Continue processing state even if command fails
+			} else {
+				a.logger.Info("Command executed successfully")
+			}
+		} else {
+			a.logger.Info("Empty command received (no action needed)")
+		}
+	}
+
+	// Check if we have a valid state change
+	if stateExists {
+		// Convert to JSON and back to StateConfig
+		newStateJSON, err := json.Marshal(newStateData)
+		if err != nil {
+			return fmt.Errorf("failed to marshal new state: %w", err)
+		}
+
+		var newState types.StateConfig
+		if err := json.Unmarshal(newStateJSON, &newState); err != nil {
+			return fmt.Errorf("failed to unmarshal new state: %w", err)
+		}
+
+		// Check if the new state is empty (backend returned {} meaning no change)
+		if !isStateConfigEmpty(&newState) {
+			hasStateChange = true
+			a.logger.Info("Received new state configuration")
+
+			// Compare with current state
+			currentState := a.configManager.GetStateConfig()
+			if !stateConfigsEqual(currentState, &newState) {
+				// If logging level is debug, print diff between current and new
+				if strings.ToLower(newState.AgentSetting.LoggingLevel) == "debug" {
+					a.logStateDiff(currentState, &newState)
+				}
+
+				// Apply state changes with feedback tracking
+				if err := a.applyStateChangesWithFeedback(currentState, &newState, "api"); err != nil {
+					a.logger.Errorf("Failed to apply state changes: %v", err)
+					return err
+				}
+			} else {
+				a.logger.Info("State configuration unchanged")
+			}
+		} else {
+			a.logger.Info("Empty state received (no changes needed)")
+		}
+	}
+
+	// Determine what to do based on what we received
+	if !hasCommand && !hasStateChange {
+		// Case 1: cmd="" and new_state={} - No change, no command
+		a.logger.Info("No command and no state changes received, performing drift detection...")
 		currentState := a.configManager.GetStateConfig()
 		if currentState != nil {
 			if err := a.verifyAndCorrectSystemStateWithFeedback(currentState, "api"); err != nil {
@@ -827,40 +883,35 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 				return err
 			}
 		}
-		return nil
-	}
-
-	// Convert to JSON and back to StateConfig
-	newStateJSON, err := json.Marshal(newStateData)
-	if err != nil {
-		return fmt.Errorf("failed to marshal new state: %w", err)
-	}
-
-	var newState types.StateConfig
-	if err := json.Unmarshal(newStateJSON, &newState); err != nil {
-		return fmt.Errorf("failed to unmarshal new state: %w", err)
-	}
-
-	// Compare with current state
-	currentState := a.configManager.GetStateConfig()
-	if !stateConfigsEqual(currentState, &newState) {
-		a.logger.Info("Received new state configuration")
-
-		// If logging level is debug, print diff between current and new
-		if strings.ToLower(newState.AgentSetting.LoggingLevel) == "debug" {
-			a.logStateDiff(currentState, &newState)
+	} else if !hasCommand && hasStateChange {
+		// Case 2: cmd="" and new_state={...} - State change only, no command
+		a.logger.Info("State changes applied, performing drift detection...")
+		currentState := a.configManager.GetStateConfig()
+		if currentState != nil {
+			if err := a.verifyAndCorrectSystemStateWithFeedback(currentState, "api"); err != nil {
+				a.logger.Errorf("Drift detection failed: %v", err)
+				return err
+			}
 		}
-
-		// Apply state changes with feedback tracking
-		if err := a.applyStateChangesWithFeedback(currentState, &newState, "api"); err != nil {
-			a.logger.Errorf("Failed to apply state changes: %v", err)
+	} else if hasCommand && !hasStateChange {
+		// Case 3: cmd="..." and new_state={} - Command only, no state change
+		a.logger.Info("Command executed, performing drift detection...")
+		currentState := a.configManager.GetStateConfig()
+		if currentState != nil {
+			if err := a.verifyAndCorrectSystemStateWithFeedback(currentState, "api"); err != nil {
+				a.logger.Errorf("Drift detection failed: %v", err)
+				return err
+			}
 		}
 	} else {
-		// State is the same, but still perform drift detection
-		a.logger.Info("State configuration unchanged, performing drift detection...")
-		if err := a.verifyAndCorrectSystemStateWithFeedback(&newState, "api"); err != nil {
-			a.logger.Errorf("Drift detection failed: %v", err)
-			return err
+		// Case 4: cmd="..." and new_state={...} - Both command and state change
+		a.logger.Info("Command executed and state changes applied, performing drift detection...")
+		currentState := a.configManager.GetStateConfig()
+		if currentState != nil {
+			if err := a.verifyAndCorrectSystemStateWithFeedback(currentState, "api"); err != nil {
+				a.logger.Errorf("Drift detection failed: %v", err)
+				return err
+			}
 		}
 	}
 
@@ -1442,17 +1493,149 @@ func (a *CoreAgent) applyStateChanges(oldState, newState *types.StateConfig) err
 	return nil
 }
 
-// stateConfigsEqual compares two state configurations for equality
+// stateConfigsEqual compares two state configurations for equality using deep comparison
 func stateConfigsEqual(a, b *types.StateConfig) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
 
-	// Simple comparison - in a real implementation you might want more sophisticated comparison
-	aJSON, _ := json.Marshal(a)
-	bJSON, _ := json.Marshal(b)
+	// Compare all fields individually to avoid JSON ordering issues
+	return a.SchemaVersion == b.SchemaVersion &&
+		agentSettingsEqual(&a.AgentSetting, &b.AgentSetting) &&
+		containersEqual(a.Containers, b.Containers) &&
+		envMapsEqual(a.Env, b.Env) &&
+		stringSlicesEqual(a.Packages, b.Packages) &&
+		customMetricsEqual(a.CustomMetrics, b.CustomMetrics) &&
+		customPackagesEqual(a.CustomPackages, b.CustomPackages)
+}
 
-	return string(aJSON) == string(bJSON)
+// agentSettingsEqual compares two AgentSetting structs for equality
+func agentSettingsEqual(a, b *types.AgentSetting) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.HeartbeatFrequency == b.HeartbeatFrequency &&
+		a.UpdateFrequency == b.UpdateFrequency &&
+		a.Mode == b.Mode &&
+		a.AgentVer == b.AgentVer &&
+		a.LoggingLevel == b.LoggingLevel
+}
+
+// containersEqual compares two slices of ContainerConfig for equality
+func containersEqual(a, b []types.ContainerConfig) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	// Create maps for comparison (order-independent)
+	aMap := make(map[string]types.ContainerConfig)
+	bMap := make(map[string]types.ContainerConfig)
+
+	for _, container := range a {
+		aMap[container.Name] = container
+	}
+	for _, container := range b {
+		bMap[container.Name] = container
+	}
+
+	// Compare each container
+	for name, containerA := range aMap {
+		containerB, exists := bMap[name]
+		if !exists || !containerConfigEqual(containerA, containerB) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// containerConfigEqual compares two ContainerConfig structs for equality
+func containerConfigEqual(a, b types.ContainerConfig) bool {
+	return a.Name == b.Name &&
+		a.Image == b.Image &&
+		a.Port == b.Port &&
+		a.HealthPath == b.HealthPath &&
+		envMapsEqual(a.Env, b.Env)
+}
+
+// stringSlicesEqual compares two string slices for equality (order-independent)
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	// Create maps for comparison
+	aMap := make(map[string]bool)
+	bMap := make(map[string]bool)
+
+	for _, s := range a {
+		aMap[s] = true
+	}
+	for _, s := range b {
+		bMap[s] = true
+	}
+
+	// Compare maps
+	for key := range aMap {
+		if !bMap[key] {
+			return false
+		}
+	}
+	for key := range bMap {
+		if !aMap[key] {
+			return false
+		}
+	}
+
+	return true
+}
+
+// customMetricsEqual compares two custom metrics maps for equality
+func customMetricsEqual(a, b map[string]string) bool {
+	return envMapsEqual(a, b)
+}
+
+// customPackagesEqual compares two custom packages maps for equality
+func customPackagesEqual(a, b map[string]types.CustomPackage) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	for name, pkgA := range a {
+		pkgB, exists := b[name]
+		if !exists || !customPackageEqual(pkgA, pkgB) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// customPackageEqual compares two CustomPackage structs for equality
+func customPackageEqual(a, b types.CustomPackage) bool {
+	return a.Install == b.Install &&
+		a.Check == b.Check &&
+		a.Uninstall == b.Uninstall
+}
+
+// isStateConfigEmpty checks if a state configuration is empty (no meaningful content)
+func isStateConfigEmpty(config *types.StateConfig) bool {
+	if config == nil {
+		return true
+	}
+
+	// Check if all fields are empty or default
+	return config.SchemaVersion == "" &&
+		config.AgentSetting.HeartbeatFrequency == "" &&
+		config.AgentSetting.UpdateFrequency == "" &&
+		config.AgentSetting.Mode == "" &&
+		config.AgentSetting.AgentVer == "" &&
+		config.AgentSetting.LoggingLevel == "" &&
+		len(config.Containers) == 0 &&
+		len(config.Env) == 0 &&
+		len(config.Packages) == 0 &&
+		len(config.CustomMetrics) == 0 &&
+		len(config.CustomPackages) == 0
 }
 
 // logStateDiff logs a concise diff of two state configs when in debug mode

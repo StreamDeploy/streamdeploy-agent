@@ -65,6 +65,11 @@ func (m *Manager) UpdateStateConfig(config *types.StateConfig) error {
 	m.updatingState = true
 	m.updatingMutex.Unlock()
 
+	// Ensure mode is never empty
+	if config.AgentSetting.Mode == "" {
+		config.AgentSetting.Mode = "http"
+	}
+
 	m.stateConfig = config
 	err := m.SaveStateConfig()
 
@@ -150,7 +155,11 @@ func (m *Manager) GetMode() string {
 	if m.stateConfig == nil {
 		return "http"
 	}
-	return m.stateConfig.AgentSetting.Mode
+	mode := m.stateConfig.AgentSetting.Mode
+	if mode == "" {
+		return "http"
+	}
+	return mode
 }
 
 // GetHeartbeatFrequency returns the heartbeat frequency
@@ -229,6 +238,9 @@ func (m *Manager) loadStateConfig() error {
 	// Set defaults
 	if config.AgentSetting.LoggingLevel == "" {
 		config.AgentSetting.LoggingLevel = "info"
+	}
+	if config.AgentSetting.Mode == "" {
+		config.AgentSetting.Mode = "http"
 	}
 
 	m.stateConfig = &config
