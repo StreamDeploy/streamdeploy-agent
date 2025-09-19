@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/types"
@@ -58,6 +59,7 @@ func parsePackageString(pkgStr string) PackageInfo {
 type Manager struct {
 	logger         types.Logger
 	packageManager *types.PackageManagerConfig
+	mutex          sync.Mutex // Protects package operations from concurrent access
 }
 
 // NewManager creates a new package manager
@@ -347,11 +349,20 @@ func (m *Manager) InstallPackage(packageName string) error {
 	}
 
 	m.logger.Infof("Executing package installation command: %s", fullCmd)
-	cmd := exec.Command("sh", "-c", fullCmd)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		m.logger.Errorf("Package installation failed for %s: %v, output: %s", packageName, err, string(output))
-		return fmt.Errorf("failed to install package %s: %w, output: %s", packageName, err, string(output))
+
+	// Use retry logic for APT operations to handle lock conflicts
+	if m.packageManager != nil && m.packageManager.Type == "apt" {
+		if err := m.executeCommandWithRetry(fullCmd, "package installation", 3); err != nil {
+			return fmt.Errorf("failed to install package %s: %w", packageName, err)
+		}
+	} else {
+		// For non-APT package managers, use regular execution
+		cmd := exec.Command("sh", "-c", fullCmd)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			m.logger.Errorf("Package installation failed for %s: %v, output: %s", packageName, err, string(output))
+			return fmt.Errorf("failed to install package %s: %w, output: %s", packageName, err, string(output))
+		}
 	}
 
 	m.logger.Infof("Successfully installed package: %s", packageName)
@@ -406,6 +417,9 @@ func (m *Manager) RemovePackage(packageName string) error {
 
 // EnsurePackagesInstalled ensures all specified system packages are installed
 func (m *Manager) EnsurePackagesInstalled(packages []string) error {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
 	var installErrors []string
 	for _, pkg := range packages {
 		if !m.IsPackageInstalled(pkg) {
@@ -427,6 +441,9 @@ func (m *Manager) EnsurePackagesInstalled(packages []string) error {
 
 // EnsureCustomPackagesInstalled ensures all custom packages are installed
 func (m *Manager) EnsureCustomPackagesInstalled(packages map[string]types.CustomPackage) error {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
 	for name, pkg := range packages {
 		if !m.isCustomPackageInstalled(name, pkg) {
 			m.logger.Infof("Installing custom package: %s", name)
@@ -442,6 +459,9 @@ func (m *Manager) EnsureCustomPackagesInstalled(packages map[string]types.Custom
 
 // SyncPackages synchronizes system packages based on new and old configurations
 func (m *Manager) SyncPackages(newPackages, oldPackages []string) (bool, error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
 	// Check if there are any actual changes needed
 	hasChanges := false
 
@@ -518,6 +538,9 @@ func (m *Manager) SyncPackages(newPackages, oldPackages []string) (bool, error) 
 
 // SyncCustomPackages synchronizes custom packages based on new and old configurations
 func (m *Manager) SyncCustomPackages(newPackages, oldPackages map[string]types.CustomPackage) (bool, error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
 	// Check if there are any actual changes needed
 	hasChanges := false
 
@@ -630,6 +653,57 @@ func (m *Manager) executeCommand(command, operation string) error {
 		cmd.Process.Kill()
 		return fmt.Errorf("command timed out after 5 minutes")
 	}
+}
+
+// executeCommandWithRetry executes a command with retry logic for APT lock conflicts
+func (m *Manager) executeCommandWithRetry(command, operation string, maxRetries int) error {
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		cmd := exec.Command("sh", "-c", command)
+
+		// Set a timeout for command execution
+		done := make(chan error, 1)
+		go func() {
+			done <- cmd.Run()
+		}()
+
+		var err error
+		select {
+		case err = <-done:
+			// Command completed
+		case <-time.After(5 * time.Minute): // 5 minute timeout
+			cmd.Process.Kill()
+			err = fmt.Errorf("command timed out after 5 minutes")
+		}
+
+		if err == nil {
+			m.logger.Infof("Command executed successfully on attempt %d", attempt)
+			return nil // Success
+		}
+
+		lastErr = err
+
+		// Check if it's an APT lock error by running a quick check
+		lockCheckCmd := exec.Command("sh", "-c", "lsof /var/lib/dpkg/lock-frontend 2>/dev/null || echo 'no lock'")
+		lockOutput, _ := lockCheckCmd.Output()
+		lockStr := string(lockOutput)
+
+		if strings.Contains(lockStr, "apt") || strings.Contains(lockStr, "dpkg") {
+			if attempt < maxRetries {
+				waitTime := time.Duration(attempt) * 2 * time.Second
+				m.logger.Infof("APT lock conflict detected (attempt %d/%d), waiting %v before retry...",
+					attempt, maxRetries, waitTime)
+				time.Sleep(waitTime)
+				continue
+			}
+		}
+
+		// If it's not a lock error or we've exhausted retries, return the error
+		return fmt.Errorf("%s command failed: %w", operation, err)
+	}
+
+	return fmt.Errorf("%s command failed after %d attempts: %w", operation, maxRetries, lastErr)
 }
 
 // customPackagesEqual compares two custom package configurations

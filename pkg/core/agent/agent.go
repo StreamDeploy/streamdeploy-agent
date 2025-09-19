@@ -698,21 +698,31 @@ func (a *CoreAgent) verifyContainers(state *types.StateConfig) error {
 	return nil
 }
 
-// verifyPackages checks if packages in the state are actually installed
+// verifyPackages checks if packages in the specified state are actually installed
 func (a *CoreAgent) verifyPackages(state *types.StateConfig) error {
 	if a.packageManager == nil {
 		a.logger.Info("Package manager not available, skipping package verification")
 		return nil
 	}
 
-	if len(state.Packages) == 0 && len(state.CustomPackages) == 0 {
-		a.logger.Info("No packages configured, skipping package verification")
+	// Use the provided state parameter, or fall back to current state if none provided
+	targetState := state
+	if targetState == nil {
+		targetState = a.configManager.GetStateConfig()
+		if targetState == nil {
+			a.logger.Info("No state available for package verification, skipping")
+			return nil
+		}
+	}
+
+	if len(targetState.Packages) == 0 && len(targetState.CustomPackages) == 0 {
+		a.logger.Info("No packages configured in target state, skipping package verification")
 		return nil
 	}
 
 	// Check for system package drift first
-	if len(state.Packages) > 0 {
-		hasDrift, missingPackages := a.packageManager.CheckPackageDrift(state.Packages)
+	if len(targetState.Packages) > 0 {
+		hasDrift, missingPackages := a.packageManager.CheckPackageDrift(targetState.Packages)
 
 		if !hasDrift {
 			a.logger.Info("All system packages are installed, no corrections needed")
@@ -727,8 +737,8 @@ func (a *CoreAgent) verifyPackages(state *types.StateConfig) error {
 	}
 
 	// Check for custom package drift
-	if len(state.CustomPackages) > 0 {
-		hasDrift, missingPackages := a.packageManager.CheckCustomPackageDrift(state.CustomPackages)
+	if len(targetState.CustomPackages) > 0 {
+		hasDrift, missingPackages := a.packageManager.CheckCustomPackageDrift(targetState.CustomPackages)
 
 		if !hasDrift {
 			a.logger.Info("All custom packages are installed, no corrections needed")
@@ -886,6 +896,7 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 	} else if !hasCommand && hasStateChange {
 		// Case 2: cmd="" and new_state={...} - State change only, no command
 		a.logger.Info("State changes applied, performing drift detection...")
+		// Use the current state (which now contains the applied changes) for drift detection
 		currentState := a.configManager.GetStateConfig()
 		if currentState != nil {
 			if err := a.verifyAndCorrectSystemStateWithFeedback(currentState, "api"); err != nil {
@@ -906,6 +917,7 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 	} else {
 		// Case 4: cmd="..." and new_state={...} - Both command and state change
 		a.logger.Info("Command executed and state changes applied, performing drift detection...")
+		// Use the current state (which now contains the applied changes) for drift detection
 		currentState := a.configManager.GetStateConfig()
 		if currentState != nil {
 			if err := a.verifyAndCorrectSystemStateWithFeedback(currentState, "api"); err != nil {
