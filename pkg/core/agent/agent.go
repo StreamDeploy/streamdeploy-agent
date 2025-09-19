@@ -796,14 +796,19 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 
+	// Debug: Log the full response structure for troubleshooting
+	a.logger.Infof("Received response with keys: %v", getMapKeys(response))
+
 	// Handle command if present in base response
 	if cmd, exists := response["cmd"]; exists {
-		a.logger.Infof("Received command in base response: %v", cmd)
+		a.logger.Infof("Received command in base response: %v (type: %T)", cmd, cmd)
 		if err := a.executeCommand(cmd); err != nil {
 			a.logger.Errorf("Failed to execute command: %v", err)
 			// Continue processing other response data even if command fails
 		}
 		a.logger.Info("Command executed")
+	} else {
+		a.logger.Info("No command field found in response")
 	}
 
 	newStateData, exists := response["new_state"]
@@ -960,6 +965,15 @@ func (a *CoreAgent) applyStateChangesWithFeedback(oldState, newState *types.Stat
 	return nil
 }
 
+// getMapKeys returns the keys of a map for debugging purposes
+func getMapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // executeCommand executes a command from the cmd field
 func (a *CoreAgent) executeCommand(cmd interface{}) error {
 	// Handle None/null case
@@ -971,11 +985,12 @@ func (a *CoreAgent) executeCommand(cmd interface{}) error {
 	// Convert cmd to string
 	command, ok := cmd.(string)
 	if !ok {
-		return fmt.Errorf("cmd must be a string, got %T", cmd)
+		a.logger.Infof("Command is not a string (type: %T, value: %v), skipping execution", cmd, cmd)
+		return nil
 	}
 
 	if command == "" {
-		a.logger.Info("Empty command, skipping execution")
+		a.logger.Info("Empty command received - no action needed")
 		return nil
 	}
 
