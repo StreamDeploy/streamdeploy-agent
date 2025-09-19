@@ -41,6 +41,23 @@ var RequiredPackages = []string{
 	"docker.io",
 }
 
+// DefaultStateConfig contains the default state configuration values
+var DefaultStateConfig = StateConfig{
+	SchemaVersion: "1.0",
+	AgentSetting: AgentSetting{
+		HeartbeatFrequency: "15s",
+		UpdateFrequency:    "30s",
+		Mode:               "http",
+		AgentVer:           "1.0.0",
+		LoggingLevel:       "info",
+	},
+	Containers:     []interface{}{},
+	Env:            make(map[string]string),
+	Packages:       RequiredPackages,
+	CustomMetrics:  make(map[string]string),
+	CustomPackages: make(map[string]interface{}),
+}
+
 type PackageManager struct {
 	Type       string `json:"type"`
 	InstallCmd string `json:"install_cmd"`
@@ -67,7 +84,6 @@ type StateConfig struct {
 	SchemaVersion  string                 `json:"schemaVersion"`
 	AgentSetting   AgentSetting           `json:"agent_setting"`
 	Containers     []interface{}          `json:"containers"`
-	ContainerLogin string                 `json:"containerLogin"`
 	Env            map[string]string      `json:"env"`
 	Packages       []string               `json:"packages"`
 	CustomMetrics  map[string]string      `json:"custom_metrics"`
@@ -665,22 +681,7 @@ func (i *Installer) createConfig() error {
 	}
 
 	// Create state config
-	stateConfig := StateConfig{
-		SchemaVersion: "1.0",
-		AgentSetting: AgentSetting{
-			HeartbeatFrequency: "15s",
-			UpdateFrequency:    "30s",
-			Mode:               "http",
-			AgentVer:           "1",
-			LoggingLevel:       "info",
-		},
-		Containers:     []interface{}{},
-		ContainerLogin: "",
-		Env:            make(map[string]string),
-		Packages:       RequiredPackages,
-		CustomMetrics:  make(map[string]string),
-		CustomPackages: make(map[string]interface{}),
-	}
+	stateConfig := DefaultStateConfig
 
 	stateConfigPath := filepath.Join(ConfigDir, "state.json")
 	if err := i.writeJSONFile(stateConfigPath, stateConfig); err != nil {
@@ -1485,22 +1486,7 @@ func EnsureStateConfig(logger types.Logger) error {
 	logger.Info("state.json not found, creating default configuration...")
 
 	// Create state config with default values
-	stateConfig := StateConfig{
-		SchemaVersion: "1.0",
-		AgentSetting: AgentSetting{
-			HeartbeatFrequency: "15s",
-			UpdateFrequency:    "30s",
-			Mode:               "http",
-			AgentVer:           "1",
-			LoggingLevel:       "info",
-		},
-		Containers:     []interface{}{},
-		ContainerLogin: "",
-		Env:            make(map[string]string),
-		Packages:       RequiredPackages,
-		CustomMetrics:  make(map[string]string),
-		CustomPackages: make(map[string]interface{}),
-	}
+	stateConfig := DefaultStateConfig
 
 	// Create config directory
 	if err := os.MkdirAll("/etc/streamdeploy", 0755); err != nil {
