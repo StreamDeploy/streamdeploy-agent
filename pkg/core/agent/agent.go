@@ -68,8 +68,8 @@ type CoreAgent struct {
 	// Self-healing result tracking
 	selfHealingResult *SelfHealingResult
 
-	// Last applied state snapshot for diffing
-	lastAppliedState *types.StateConfig
+	// Current system state snapshot for diffing
+	currentSystemState *types.StateConfig
 }
 
 // NewCoreAgent creates a new core agent instance
@@ -96,8 +96,8 @@ func NewCoreAgent(deviceConfigPath string) (*CoreAgent, error) {
 	agent.updateInterval = configManager.GetUpdateFrequency()
 	agent.certificateCheckInterval = 24 * time.Hour // Check certificates daily
 
-	// Initialize lastAppliedState from current state
-	agent.lastAppliedState = configManager.GetStateConfig()
+	// Initialize currentSystemState from device desired state
+	agent.currentSystemState = configManager.GetStateConfig()
 
 	logger.Info("Core agent initialized successfully")
 
@@ -369,9 +369,9 @@ func (a *CoreAgent) certificateCheckLoop() {
 
 // sendHeartbeat sends a heartbeat message
 func (a *CoreAgent) sendHeartbeat() error {
-	stateConfig := a.configManager.GetStateConfig()
-	if stateConfig == nil {
-		return fmt.Errorf("state config is nil")
+	deviceDesiredState := a.configManager.GetStateConfig()
+	if deviceDesiredState == nil {
+		return fmt.Errorf("device desired state config is nil")
 	}
 
 	// Collect metrics if collector is available
@@ -390,7 +390,7 @@ func (a *CoreAgent) sendHeartbeat() error {
 			}
 
 			// Add custom metrics
-			customMetrics, err := a.metricsCollector.CollectCustomMetrics(stateConfig.CustomMetrics)
+			customMetrics, err := a.metricsCollector.CollectCustomMetrics(deviceDesiredState.CustomMetrics)
 			if err != nil {
 				a.logger.Errorf("Failed to collect custom metrics: %v", err)
 			} else {
@@ -406,16 +406,16 @@ func (a *CoreAgent) sendHeartbeat() error {
 	// Check container health
 	containersHealthy := true
 	if a.containerManager != nil {
-		stateConfig := a.configManager.GetStateConfig()
-		if stateConfig != nil && len(stateConfig.Containers) > 0 {
+		deviceDesiredState := a.configManager.GetStateConfig()
+		if deviceDesiredState != nil && len(deviceDesiredState.Containers) > 0 {
 			// Ensure containers are running
-			if err := a.containerManager.EnsureContainersRunning(stateConfig.Containers); err != nil {
+			if err := a.containerManager.EnsureContainersRunning(deviceDesiredState.Containers); err != nil {
 				a.logger.Errorf("Failed to ensure containers are running: %v", err)
 				containersHealthy = false
 			}
 
 			// Perform health checks
-			for _, containerConfig := range stateConfig.Containers {
+			for _, containerConfig := range deviceDesiredState.Containers {
 				containerInfo := &types.ContainerInfo{
 					Name:       containerConfig.Name,
 					Image:      containerConfig.Image,
@@ -444,7 +444,7 @@ func (a *CoreAgent) sendHeartbeat() error {
 	// Build heartbeat payload
 	heartbeat := &types.HeartbeatPayload{
 		Status:       status,
-		AgentSetting: stateConfig.AgentSetting,
+		AgentSetting: deviceDesiredState.AgentSetting,
 		Metrics:      metrics,
 	}
 
@@ -494,15 +494,19 @@ func (a *CoreAgent) performUpdateCheck() error {
 	a.statusUpdateLock.Lock()
 	defer a.statusUpdateLock.Unlock()
 
-	stateConfig := a.configManager.GetStateConfig()
-	if stateConfig == nil {
-		return fmt.Errorf("state config is nil")
+	deviceDesiredState := a.configManager.GetStateConfig()
+	if deviceDesiredState == nil {
+		return fmt.Errorf("device desired state config is nil")
 	}
 
-	// Build status update payload
+	// Detect actual system state and update currentSystemState
+	actualSystemState := a.detectCurrentSystemState()
+	a.currentSystemState = cloneStateConfig(actualSystemState)
+
+	// Build status update payload with actual detected system state
 	statusUpdate := &types.StatusUpdatePayload{
 		UpdateType:   "update_check",
-		CurrentState: *stateConfig,
+		CurrentState: *actualSystemState,
 	}
 
 	// Send status update based on mode
@@ -577,15 +581,15 @@ func (a *CoreAgent) performUpdateCheck() error {
 func (a *CoreAgent) performLocalStateCheck() error {
 	a.logger.Info("Performing local state check...")
 
-	// Get current state from config manager (in-memory state)
-	currentState := a.configManager.GetStateConfig()
-	if currentState == nil {
-		return fmt.Errorf("current state config is nil")
+	// Get device desired state from config manager (in-memory state)
+	deviceDesiredState := a.configManager.GetStateConfig()
+	if deviceDesiredState == nil {
+		return fmt.Errorf("device desired state config is nil")
 	}
 
-	// Check if actual system state matches the in-memory state
+	// Check if actual system state matches the desired state
 	// and make corrections if needed
-	if err := a.verifyAndCorrectSystemState(currentState); err != nil {
+	if err := a.verifyAndCorrectSystemState(deviceDesiredState); err != nil {
 		return fmt.Errorf("failed to verify and correct system state: %w", err)
 	}
 
@@ -595,11 +599,12 @@ func (a *CoreAgent) performLocalStateCheck() error {
 
 // verifyAndCorrectSystemState verifies that the actual system state matches the in-memory state
 func (a *CoreAgent) verifyAndCorrectSystemState(state *types.StateConfig) error {
-	return a.verifyAndCorrectSystemStateWithFeedback(state, "local")
+	_, err := a.verifyAndCorrectSystemStateWithFeedback(state, "local")
+	return err
 }
 
 // verifyAndCorrectSystemStateWithFeedback verifies system state and sends feedback
-func (a *CoreAgent) verifyAndCorrectSystemStateWithFeedback(state *types.StateConfig, triggeredBy string) error {
+func (a *CoreAgent) verifyAndCorrectSystemStateWithFeedback(state *types.StateConfig, triggeredBy string) (*SelfHealingResult, error) {
 	// Set self-healing flag to prevent API calls during system corrections
 	a.SetSelfHealing(true)
 	defer a.SetSelfHealing(false)
@@ -649,7 +654,118 @@ func (a *CoreAgent) verifyAndCorrectSystemStateWithFeedback(state *types.StateCo
 		a.sendSelfHealingFeedback(result)
 	}
 
-	return nil
+	return result, nil
+}
+
+// detectCurrentSystemState detects the actual current state of the system
+func (a *CoreAgent) detectCurrentSystemState() *types.StateConfig {
+	currentState := &types.StateConfig{
+		SchemaVersion:  "1.0",
+		Containers:     []types.ContainerConfig{},
+		Packages:       []string{},
+		CustomPackages: map[string]types.CustomPackage{},
+		Env:            map[string]string{},
+	}
+
+	// Get agent settings from current desired state
+	if deviceDesiredState := a.configManager.GetStateConfig(); deviceDesiredState != nil {
+		currentState.AgentSetting = deviceDesiredState.AgentSetting
+		currentState.CustomMetrics = deviceDesiredState.CustomMetrics
+	}
+
+	// Detect currently running containers
+	if a.containerManager != nil {
+		// This would need to be implemented in container manager
+		// For now, we'll use the desired state as a baseline
+		if deviceDesiredState := a.configManager.GetStateConfig(); deviceDesiredState != nil {
+			for _, desiredContainer := range deviceDesiredState.Containers {
+				if a.containerManager.IsContainerRunning(desiredContainer.Name) {
+					currentState.Containers = append(currentState.Containers, desiredContainer)
+				}
+			}
+		}
+	}
+
+	// Detect currently installed packages
+	if a.packageManager != nil {
+		if deviceDesiredState := a.configManager.GetStateConfig(); deviceDesiredState != nil {
+			// Check which packages are actually installed (not missing)
+			hasDrift, missingPackages := a.packageManager.CheckPackageDrift(deviceDesiredState.Packages)
+			if !hasDrift {
+				// All desired packages are installed
+				currentState.Packages = deviceDesiredState.Packages
+			} else {
+				// Only packages that are NOT missing are installed
+				installedPackages := []string{}
+				missingMap := make(map[string]bool)
+				for _, missing := range missingPackages {
+					missingMap[missing] = true
+				}
+				for _, desired := range deviceDesiredState.Packages {
+					if !missingMap[desired] {
+						installedPackages = append(installedPackages, desired)
+					}
+				}
+				currentState.Packages = installedPackages
+			}
+
+			// Check custom packages
+			hasCustomDrift, missingCustomPackages := a.packageManager.CheckCustomPackageDrift(deviceDesiredState.CustomPackages)
+			if !hasCustomDrift {
+				// All desired custom packages are installed
+				currentState.CustomPackages = deviceDesiredState.CustomPackages
+			} else {
+				// Only custom packages that are NOT missing are installed
+				installedCustomPackages := make(map[string]types.CustomPackage)
+				for name, pkg := range deviceDesiredState.CustomPackages {
+					if _, isMissing := missingCustomPackages[name]; !isMissing {
+						installedCustomPackages[name] = pkg
+					}
+				}
+				currentState.CustomPackages = installedCustomPackages
+			}
+		}
+	}
+
+	// Detect current environment variables
+	if a.environmentManager != nil {
+		if currentEnv, err := a.environmentManager.GetCurrentSystemEnvironment(); err == nil {
+			currentState.Env = currentEnv
+		}
+	}
+
+	return currentState
+}
+
+// syncSystemToDesiredState synchronizes the actual system state to match the desired state
+func (a *CoreAgent) syncSystemToDesiredState(triggeredBy string) (*SelfHealingResult, error) {
+	// Get device desired state
+	deviceDesiredState := a.configManager.GetStateConfig()
+	if deviceDesiredState == nil {
+		return nil, fmt.Errorf("device desired state config is nil")
+	}
+
+	// Compare currentSystemState with deviceDesiredState to determine what needs to be applied
+	if stateConfigsEqual(a.currentSystemState, deviceDesiredState) {
+		a.logger.Info("System is already in desired state, no changes needed")
+		return &SelfHealingResult{
+			Success:     true,
+			Errors:      make(map[string]string),
+			TriggeredBy: triggeredBy,
+		}, nil
+	}
+
+	// Apply changes using the same logic as API state changes
+	result, err := a.applyStateChangesWithFeedback(a.currentSystemState, deviceDesiredState, triggeredBy)
+	if err != nil {
+		return result, err
+	}
+
+	// Update currentSystemState to reflect what was actually applied successfully
+	actualAppliedState := a.createActualAppliedState(a.currentSystemState, deviceDesiredState, result)
+	a.currentSystemState = cloneStateConfig(actualAppliedState)
+
+	return result, nil
 }
 
 // verifyContainers checks if containers in the state are actually running
@@ -705,7 +821,7 @@ func (a *CoreAgent) verifyPackages(state *types.StateConfig) error {
 		return nil
 	}
 
-	// Use the provided state parameter, or fall back to current state if none provided
+	// Use the provided state parameter, or fall back to device desired state if none provided
 	targetState := state
 	if targetState == nil {
 		targetState = a.configManager.GetStateConfig()
@@ -824,13 +940,11 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 	// 3. cmd="..." and new_state={} - Command only, no state change
 	// 4. cmd="..." and new_state={...} - Both command and state change
 
-	var hasCommand bool
 	var hasStateChange bool
 
-	// Check if we have a valid command
+	// Execute command if present
 	if cmdExists {
 		if cmdStr, ok := cmd.(string); ok && cmdStr != "" {
-			hasCommand = true
 			a.logger.Infof("Received command: %s", cmdStr)
 			if err := a.executeCommand(cmd); err != nil {
 				a.logger.Errorf("Failed to execute command: %v", err)
@@ -861,77 +975,36 @@ func (a *CoreAgent) handleStatusUpdateResponse(responseBody []byte) error {
 			hasStateChange = true
 			a.logger.Info("Received new state configuration")
 
-			// Compare with current state
-			currentState := a.configManager.GetStateConfig()
-			if !stateConfigsEqual(currentState, &newState) {
-				// If logging level is debug, print diff between current and new
-				if strings.ToLower(newState.AgentSetting.LoggingLevel) == "debug" {
-					a.logStateDiff(currentState, &newState)
-				}
-
-				// Apply state changes with feedback tracking
-				if err := a.applyStateChangesWithFeedback(currentState, &newState, "api"); err != nil {
-					a.logger.Errorf("Failed to apply state changes: %v", err)
-					return err
-				}
-			} else {
-				a.logger.Info("State configuration unchanged")
+			// Update device desired state with the new state from API
+			if err := a.configManager.UpdateStateConfig(&newState); err != nil {
+				a.logger.Errorf("Failed to update device desired state: %v", err)
+				return err
 			}
+			a.logger.Info("Device desired state updated with new configuration")
 		} else {
 			a.logger.Info("Empty state received (no changes needed)")
 		}
 	}
 
-	// Determine what to do based on what we received
-	if !hasCommand && !hasStateChange {
-		// Case 1: cmd="" and new_state={} - No change, no command
-		a.logger.Info("No command and no state changes received, performing drift detection...")
-		currentState := a.configManager.GetStateConfig()
-		if currentState != nil {
-			if err := a.verifyAndCorrectSystemStateWithFeedback(currentState, "api"); err != nil {
-				a.logger.Errorf("Drift detection failed: %v", err)
-				return err
-			}
-		}
-	} else if !hasCommand && hasStateChange {
-		// Case 2: cmd="" and new_state={...} - State change only, no command
-		a.logger.Info("State changes applied, performing drift detection...")
-		// Use the current state (which now contains the applied changes) for drift detection
-		currentState := a.configManager.GetStateConfig()
-		if currentState != nil {
-			if err := a.verifyAndCorrectSystemStateWithFeedback(currentState, "api"); err != nil {
-				a.logger.Errorf("Drift detection failed: %v", err)
-				return err
-			}
-		}
-	} else if hasCommand && !hasStateChange {
-		// Case 3: cmd="..." and new_state={} - Command only, no state change
-		a.logger.Info("Command executed, performing drift detection...")
-		currentState := a.configManager.GetStateConfig()
-		if currentState != nil {
-			if err := a.verifyAndCorrectSystemStateWithFeedback(currentState, "api"); err != nil {
-				a.logger.Errorf("Drift detection failed: %v", err)
-				return err
-			}
-		}
+	// Use unified logic: sync system to desired state (handles both API changes and self-healing)
+	triggeredBy := "api"
+	if hasStateChange {
+		a.logger.Info("State changes received, synchronizing system to desired state...")
 	} else {
-		// Case 4: cmd="..." and new_state={...} - Both command and state change
-		a.logger.Info("Command executed and state changes applied, performing drift detection...")
-		// Use the current state (which now contains the applied changes) for drift detection
-		currentState := a.configManager.GetStateConfig()
-		if currentState != nil {
-			if err := a.verifyAndCorrectSystemStateWithFeedback(currentState, "api"); err != nil {
-				a.logger.Errorf("Drift detection failed: %v", err)
-				return err
-			}
-		}
+		a.logger.Info("No state changes received, performing self-healing to ensure system matches desired state...")
+	}
+
+	_, err := a.syncSystemToDesiredState(triggeredBy)
+	if err != nil {
+		a.logger.Errorf("Failed to sync system to desired state: %v", err)
+		return err
 	}
 
 	return nil
 }
 
 // applyStateChangesWithFeedback applies state changes with feedback tracking
-func (a *CoreAgent) applyStateChangesWithFeedback(oldState, newState *types.StateConfig, triggeredBy string) error {
+func (a *CoreAgent) applyStateChangesWithFeedback(oldState, newState *types.StateConfig, triggeredBy string) (*SelfHealingResult, error) {
 	// Set self-healing flag to prevent API calls during state changes
 	a.SetSelfHealing(true)
 	defer a.SetSelfHealing(false)
@@ -942,7 +1015,6 @@ func (a *CoreAgent) applyStateChangesWithFeedback(oldState, newState *types.Stat
 		Errors:      make(map[string]string),
 		TriggeredBy: triggeredBy,
 	}
-	a.selfHealingResult = result
 
 	// Sync containers if container manager is available
 	if a.containerManager != nil {
@@ -1016,7 +1088,7 @@ func (a *CoreAgent) applyStateChangesWithFeedback(oldState, newState *types.Stat
 	if err := a.configManager.UpdateStateConfig(newState); err != nil {
 		result.Success = false
 		result.Errors["state_config"] = err.Error()
-		return fmt.Errorf("failed to update state config: %w", err)
+		return result, fmt.Errorf("failed to update state config: %w", err)
 	}
 
 	a.logger.Info("State configuration updated")
@@ -1030,7 +1102,47 @@ func (a *CoreAgent) applyStateChangesWithFeedback(oldState, newState *types.Stat
 		a.sendSelfHealingFeedback(result)
 	}
 
-	return nil
+	return result, nil
+}
+
+// createActualAppliedState creates a state that reflects what was actually applied successfully
+func (a *CoreAgent) createActualAppliedState(oldState, newState *types.StateConfig, result *SelfHealingResult) *types.StateConfig {
+	// Start with the old state as baseline
+	actualApplied := cloneStateConfig(oldState)
+	if actualApplied == nil {
+		actualApplied = &types.StateConfig{}
+	}
+
+	// Only update components that succeeded
+	// If no errors occurred, use the full new state
+	if result.Success {
+		return cloneStateConfig(newState)
+	}
+
+	// Check each component and only apply successful changes
+	if _, hasError := result.Errors[string(TaskContainers)]; !hasError {
+		actualApplied.Containers = newState.Containers
+	}
+
+	if _, hasError := result.Errors[string(TaskPackages)]; !hasError {
+		actualApplied.Packages = newState.Packages
+	}
+
+	if _, hasError := result.Errors[string(TaskCustomPackages)]; !hasError {
+		actualApplied.CustomPackages = newState.CustomPackages
+	}
+
+	if _, hasError := result.Errors[string(TaskEnvironment)]; !hasError {
+		actualApplied.Env = newState.Env
+	}
+
+	// Always update agent settings as they don't require system changes
+	actualApplied.AgentSetting = newState.AgentSetting
+	actualApplied.SchemaVersion = newState.SchemaVersion
+	actualApplied.CustomMetrics = newState.CustomMetrics
+
+	a.logger.Infof("Created actual applied state reflecting successful operations. Errors: %v", result.Errors)
+	return actualApplied
 }
 
 // getMapKeys returns the keys of a map for debugging purposes
@@ -1181,7 +1293,7 @@ func (a *CoreAgent) sendSelfHealingFeedback(result *SelfHealingResult) {
 		// Empty state on success
 		statusUpdate.CurrentState = types.StateConfig{}
 	} else {
-		// For error cases, send current state from config manager
+		// For error cases, send device desired state from config manager
 		// Error details will be logged for debugging
 		statusUpdate.CurrentState = *a.configManager.GetStateConfig()
 		a.logger.Errorf("Self-healing errors: %v", result.Errors)
@@ -1349,31 +1461,38 @@ func (a *CoreAgent) handleStateConfigChange(isError bool) {
 		return
 	}
 
-	a.logger.Info("State configuration changed, applying changes...")
+	a.logger.Info("State.json file changed, treating as update...")
 
-	// Get the new state configuration (already loaded by the config manager)
-	newState := a.configManager.GetStateConfig()
-	if newState == nil {
-		a.logger.Errorf("Failed to get new state configuration")
+	// Lock to prevent concurrent API updates during file-based state change
+	a.statusUpdateLock.Lock()
+	defer a.statusUpdateLock.Unlock()
+
+	// Validate: Get the new state from state.json file (already loaded by config manager)
+	deviceDesiredState := a.configManager.GetStateConfig()
+	if deviceDesiredState == nil {
+		a.logger.Errorf("Failed to get new state configuration from state.json")
 		return
 	}
 
-	// If logging level is debug, print diff between last and new state
-	if strings.ToLower(newState.AgentSetting.LoggingLevel) == "debug" {
-		a.logStateDiff(a.lastAppliedState, newState)
+	a.logger.Info("State.json validated successfully, processing update...")
+
+	// Detect: Get actual system state
+	actualSystemState := a.detectCurrentSystemState()
+	a.currentSystemState = cloneStateConfig(actualSystemState)
+
+	// If logging level is debug, print diff between current system state and desired state
+	if strings.ToLower(deviceDesiredState.AgentSetting.LoggingLevel) == "debug" {
+		a.logStateDiff(actualSystemState, deviceDesiredState)
 	}
 
-	// Apply the changes using the same logic as API responses
-	// Use lastAppliedState as old state for accurate sync
-	if err := a.applyStateChanges(a.lastAppliedState, newState); err != nil {
-		a.logger.Errorf("Failed to apply state changes: %v", err)
+	// Sync: Compare currentSystemState vs deviceDesiredState and apply changes
+	_, err := a.syncSystemToDesiredState("file")
+	if err != nil {
+		a.logger.Errorf("Failed to sync system to desired state: %v", err)
 		return
 	}
 
-	a.logger.Info("State changes applied successfully")
-
-	// Update lastAppliedState snapshot after successful apply
-	a.lastAppliedState = cloneStateConfig(newState)
+	a.logger.Info("File-based state update completed successfully")
 }
 
 // resetAgentConfigToDefault resets agent.json with the current device configuration from memory

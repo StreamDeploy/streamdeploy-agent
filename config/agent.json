@@ -11,7 +11,7 @@
     "package_manager": {
         "type": "apt",
         "install_cmd": "apt-get install -y",
-        "check_cmd": "dpkg -l",
+        "check_cmd": "dpkg -s",
         "remove_cmd": "apt-get remove -y",
         "update_cmd": "apt-get update"
     }
