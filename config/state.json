@@ -39,7 +39,7 @@
     },
     "packages": [
         "curl", 
-        "openssl",
+        "openssl=2.3",
         "ca-certificates",
         "systemd",
         "docker"

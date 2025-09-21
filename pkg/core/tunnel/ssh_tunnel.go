@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -579,4 +580,67 @@ func generateSessionID() string {
 	bytes := make([]byte, 16)
 	rand.Read(bytes)
 	return fmt.Sprintf("%x", bytes)
+}
+
+// HandleCustomCommand handles custom commands (those starting with "custom ")
+func (stm *SSHTunnelManager) HandleCustomCommand(command string) error {
+	// Parse command: "custom ssh user_456 2024-01-01T12:00:00Z"
+	parts := strings.Fields(command)
+
+	if len(parts) < 2 {
+		return fmt.Errorf("invalid custom command format: %s", command)
+	}
+
+	// Check for SSH tunnel command
+	if parts[1] == "ssh" {
+		return stm.HandleSSHTunnelCommand(command)
+	}
+
+	// Add other custom command types here in the future
+	return fmt.Errorf("unknown custom command type: %s", parts[1])
+}
+
+// HandleSSHTunnelCommand handles SSH tunnel commands
+func (stm *SSHTunnelManager) HandleSSHTunnelCommand(command string) error {
+	// Parse command: "custom ssh user_456 2024-01-01T12:00:00Z" or "ssh user123"
+	parts := strings.Fields(command)
+
+	var user string
+	var expires time.Time
+	var err error
+
+	if len(parts) == 2 {
+		// Format: "ssh user123" - use default expiration (1 hour from now)
+		user = parts[1]
+		expires = time.Now().Add(1 * time.Hour)
+		stm.logger.Infof("Using default expiration time: %s", expires.Format(time.RFC3339))
+	} else if len(parts) == 4 {
+		// Format: "custom ssh user_456 2024-01-01T12:00:00Z"
+		user = parts[2]
+		expiresStr := parts[3]
+
+		// Parse expiration time
+		expires, err = time.Parse(time.RFC3339, expiresStr)
+		if err != nil {
+			return fmt.Errorf("invalid expiration time format: %s", expiresStr)
+		}
+	} else {
+		return fmt.Errorf("invalid SSH tunnel command format: %s (expected 'ssh user123' or 'custom ssh user_456 2024-01-01T12:00:00Z')", command)
+	}
+
+	// Check if tunnel is already active
+	if stm.IsTunnelActive() {
+		stm.logger.Info("SSH tunnel already active, stopping existing tunnel")
+		stm.StopTunnel()
+	}
+
+	// Start new tunnel
+	stm.logger.Infof("Starting SSH tunnel for user: %s, expires: %s", user, expires)
+
+	if err := stm.StartTunnel(user, expires); err != nil {
+		return fmt.Errorf("failed to start SSH tunnel: %w", err)
+	}
+
+	stm.logger.Info("SSH tunnel started successfully")
+	return nil
 }

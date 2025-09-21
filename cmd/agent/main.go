@@ -19,10 +19,11 @@ import (
 	"time"
 
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/agent/container"
+	"github.com/StreamDeploy/streamdeploy-agent/pkg/agent/custompackages"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/agent/environment"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/agent/https"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/agent/metrics"
-	"github.com/StreamDeploy/streamdeploy-agent/pkg/agent/packages"
+	"github.com/StreamDeploy/streamdeploy-agent/pkg/agent/systempackages"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/agent"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/types"
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/utils"
@@ -140,17 +141,15 @@ func setupFullGoComponents(coreAgent *agent.CoreAgent, configPath string) error 
 	coreAgent.SetEnvironmentManager(environmentManager)
 	logger.Info("Environment manager configured")
 
-	// Set up package manager - convert installer.PackageManager to types.PackageManagerConfig
-	packageManagerConfig := &types.PackageManagerConfig{
-		Type:       deviceConfig.PackageManager.Type,
-		InstallCmd: deviceConfig.PackageManager.InstallCmd,
-		CheckCmd:   deviceConfig.PackageManager.CheckCmd,
-		RemoveCmd:  deviceConfig.PackageManager.RemoveCmd,
-		UpdateCmd:  deviceConfig.PackageManager.UpdateCmd,
-	}
-	packageManager := packages.NewManager(utils.NewLogger("PACKAGE"), packageManagerConfig)
-	coreAgent.SetPackageManager(packageManager)
-	logger.Info("Package manager configured")
+	// Set up system package manager - no package manager config, will use auto-detection
+	systemPackageManager := systempackages.NewManager(utils.NewLogger("SYSTEM_PACKAGE"), nil)
+	coreAgent.SetSystemPackageManager(systemPackageManager)
+	logger.Info("System package manager configured")
+
+	// Set up custom package manager
+	customPackageManager := custompackages.NewManager(utils.NewLogger("CUSTOM_PACKAGE"))
+	coreAgent.SetCustomPackageManager(customPackageManager)
+	logger.Info("Custom package manager configured")
 
 	// TODO: Set up MQTT client when implemented
 	// mqttClient, err := mqtt.NewClient(...)

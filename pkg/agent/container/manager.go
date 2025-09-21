@@ -1,10 +1,8 @@
 package container
 
 import (
-	"encoding/json"
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/types"
@@ -20,6 +18,163 @@ func NewManager(logger types.Logger) *Manager {
 	return &Manager{
 		logger: logger,
 	}
+}
+
+// DetectCurrentState detects the current state of containers
+// For Docker containers, list all running containers and for those that exist in desired state,
+// add the extra fields from desired state. For containers not in desired state, include them as-is.
+func (m *Manager) DetectCurrentState(desiredState *types.StateConfig) []types.ContainerConfig {
+	var currentContainers []types.ContainerConfig
+
+	// First, use Docker command to list all running containers
+	runningContainers, err := m.GetRunningContainers()
+	if err != nil {
+		m.logger.Errorf("Failed to get running containers: %v", err)
+		return currentContainers
+	}
+
+	// Create a map of desired containers by name for quick lookup
+	var desiredContainerMap map[string]types.ContainerConfig
+	if desiredState != nil {
+		desiredContainerMap = make(map[string]types.ContainerConfig)
+		for _, container := range desiredState.Containers {
+			desiredContainerMap[container.Name] = container
+		}
+	}
+
+	// For each running container, add it to current state
+	for _, runningContainer := range runningContainers {
+		if desiredContainerMap != nil {
+			if desiredContainer, exists := desiredContainerMap[runningContainer.Name]; exists {
+				// Container exists in desired state, add it with all fields from desired state
+				currentContainers = append(currentContainers, types.ContainerConfig{
+					Name:       desiredContainer.Name,
+					Image:      desiredContainer.Image,
+					Port:       desiredContainer.Port,
+					HealthPath: desiredContainer.HealthPath,
+					Env:        desiredContainer.Env,
+				})
+			} else {
+				// Container not in desired state, add it as-is from running state
+				currentContainers = append(currentContainers, runningContainer)
+			}
+		} else {
+			// No desired state, add all running containers as-is
+			currentContainers = append(currentContainers, runningContainer)
+		}
+	}
+
+	return currentContainers
+}
+
+// CompareStates compares current state with desired state and returns what needs to be destroyed, created, or updated
+func (m *Manager) CompareStates(currentState, desiredState []types.ContainerConfig) ([]types.ContainerConfig, []types.ContainerConfig, []types.ContainerConfig) {
+	// Create maps for easier lookup
+	currentMap := make(map[string]types.ContainerConfig)
+	desiredMap := make(map[string]types.ContainerConfig)
+
+	for _, config := range currentState {
+		currentMap[config.Name] = config
+	}
+
+	for _, config := range desiredState {
+		desiredMap[config.Name] = config
+	}
+
+	var toDestroy, toCreate, toUpdate []types.ContainerConfig
+
+	// Find containers to destroy (in current but not in desired)
+	for name, currentConfig := range currentMap {
+		if _, exists := desiredMap[name]; !exists {
+			toDestroy = append(toDestroy, currentConfig)
+		}
+	}
+
+	// Find containers to create or update (in desired)
+	for name, desiredConfig := range desiredMap {
+		if currentConfig, exists := currentMap[name]; exists {
+			// Container exists, check if it needs updating
+			if !m.configsEqual(currentConfig, desiredConfig) {
+				toUpdate = append(toUpdate, desiredConfig)
+			}
+		} else {
+			// Container doesn't exist, needs to be created
+			toCreate = append(toCreate, desiredConfig)
+		}
+	}
+
+	return toDestroy, toCreate, toUpdate
+}
+
+// Destroy removes containers that are no longer needed
+func (m *Manager) Destroy(containers []types.ContainerConfig) error {
+	for _, config := range containers {
+		m.logger.Infof("Destroying container: %s", config.Name)
+
+		// Stop container if running
+		if m.IsContainerRunning(config.Name) {
+			if err := m.StopContainer(config.Name); err != nil {
+				m.logger.Errorf("Failed to stop container %s: %v", config.Name, err)
+				return fmt.Errorf("failed to stop container %s: %w", config.Name, err)
+			}
+		}
+
+		// Remove container
+		if err := m.removeContainer(config.Name); err != nil {
+			m.logger.Errorf("Failed to remove container %s: %v", config.Name, err)
+			return fmt.Errorf("failed to remove container %s: %w", config.Name, err)
+		}
+
+		m.logger.Infof("Successfully destroyed container: %s", config.Name)
+	}
+
+	return nil
+}
+
+// Create starts new containers
+func (m *Manager) Create(containers []types.ContainerConfig) error {
+	for _, config := range containers {
+		m.logger.Infof("Creating container: %s", config.Name)
+
+		if err := m.StartContainer(&config); err != nil {
+			m.logger.Errorf("Failed to create container %s: %v", config.Name, err)
+			return fmt.Errorf("failed to create container %s: %w", config.Name, err)
+		}
+
+		m.logger.Infof("Successfully created container: %s", config.Name)
+	}
+
+	return nil
+}
+
+// Update recreates containers with updated configuration
+func (m *Manager) Update(containers []types.ContainerConfig) error {
+	for _, config := range containers {
+		m.logger.Infof("Updating container: %s", config.Name)
+
+		// Stop and remove existing container
+		if m.IsContainerRunning(config.Name) {
+			if err := m.StopContainer(config.Name); err != nil {
+				m.logger.Errorf("Failed to stop container %s: %v", config.Name, err)
+			}
+		}
+
+		if m.containerExists(config.Name) {
+			if err := m.removeContainer(config.Name); err != nil {
+				m.logger.Errorf("Failed to remove container %s: %v", config.Name, err)
+			}
+		}
+
+		// Start container with new configuration
+		if err := m.StartContainer(&config); err != nil {
+			m.logger.Errorf("Failed to update container %s: %v", config.Name, err)
+			return fmt.Errorf("failed to update container %s: %w", config.Name, err)
+		}
+
+		m.logger.Infof("Successfully updated container: %s", config.Name)
+	}
+
+	return nil
 }
 
 // IsContainerRunning checks if a container is currently running
@@ -112,17 +267,6 @@ func (m *Manager) StopContainer(name string) error {
 	return nil
 }
 
-// EnsureContainersRunning ensures all specified containers are running
-func (m *Manager) EnsureContainersRunning(configs []types.ContainerConfig) error {
-	for _, config := range configs {
-		if err := m.StartContainer(&config); err != nil {
-			m.logger.Errorf("Failed to ensure container %s is running: %v", config.Name, err)
-			return err
-		}
-	}
-	return nil
-}
-
 // PerformHealthCheck performs a health check on a container
 func (m *Manager) PerformHealthCheck(container *types.ContainerInfo) bool {
 	if container == nil {
@@ -142,6 +286,17 @@ func (m *Manager) PerformHealthCheck(container *types.ContainerInfo) bool {
 
 	// If no health path specified, just check if container is running
 	return true
+}
+
+// EnsureContainersRunning ensures all specified containers are running
+func (m *Manager) EnsureContainersRunning(configs []types.ContainerConfig) error {
+	for _, config := range configs {
+		if err := m.StartContainer(&config); err != nil {
+			m.logger.Errorf("Failed to ensure container %s is running: %v", config.Name, err)
+			return err
+		}
+	}
+	return nil
 }
 
 // SyncContainers synchronizes containers based on new and old configurations
@@ -234,149 +389,6 @@ func (m *Manager) SyncContainers(newConfigs, oldConfigs []types.ContainerConfig)
 	return true, nil
 }
 
-// GetContainerInfo retrieves information about a container
-func (m *Manager) GetContainerInfo(name string) (*types.ContainerInfo, error) {
-	// Get container details using docker inspect
-	cmd := exec.Command("docker", "inspect", name)
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("failed to inspect container %s: %w", name, err)
-	}
-
-	// Parse JSON output
-	var inspectData []map[string]interface{}
-	if err := json.Unmarshal(output, &inspectData); err != nil {
-		return nil, fmt.Errorf("failed to parse container inspect data: %w", err)
-	}
-
-	if len(inspectData) == 0 {
-		return nil, fmt.Errorf("no container data found for %s", name)
-	}
-
-	containerData := inspectData[0]
-
-	// Extract relevant information
-	info := &types.ContainerInfo{
-		Name:    name,
-		Running: m.IsContainerRunning(name),
-		Healthy: true, // Will be updated by health check
-	}
-
-	// Extract image
-	if config, ok := containerData["Config"].(map[string]interface{}); ok {
-		if image, ok := config["Image"].(string); ok {
-			info.Image = image
-		}
-	}
-
-	// Extract port information
-	if networkSettings, ok := containerData["NetworkSettings"].(map[string]interface{}); ok {
-		if ports, ok := networkSettings["Ports"].(map[string]interface{}); ok {
-			for portKey := range ports {
-				if strings.Contains(portKey, "/tcp") {
-					portStr := strings.Split(portKey, "/")[0]
-					if port, err := strconv.Atoi(portStr); err == nil {
-						info.Port = port
-						break
-					}
-				}
-			}
-		}
-	}
-
-	return info, nil
-}
-
-// ListContainers lists all containers managed by this agent
-func (m *Manager) ListContainers() ([]*types.ContainerInfo, error) {
-	cmd := exec.Command("docker", "ps", "-a", "--format", "{{.Names}}")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %w", err)
-	}
-
-	var containers []*types.ContainerInfo
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-
-	for _, line := range lines {
-		name := strings.TrimSpace(line)
-		if name == "" {
-			continue
-		}
-
-		info, err := m.GetContainerInfo(name)
-		if err != nil {
-			m.logger.Errorf("Failed to get info for container %s: %v", name, err)
-			continue
-		}
-
-		containers = append(containers, info)
-	}
-
-	return containers, nil
-}
-
-// containerExists checks if a container exists (running or stopped)
-func (m *Manager) containerExists(name string) bool {
-	cmd := exec.Command("docker", "ps", "-a", "--filter", fmt.Sprintf("name=%s", name), "--format", "{{.Names}}")
-	output, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	for _, line := range lines {
-		if strings.TrimSpace(line) == name {
-			return true
-		}
-	}
-	return false
-}
-
-// removeContainer removes a container
-func (m *Manager) removeContainer(name string) error {
-	cmd := exec.Command("docker", "rm", name)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to remove container %s: %w, output: %s", name, err, string(output))
-	}
-	return nil
-}
-
-// performHTTPHealthCheck performs an HTTP health check
-func (m *Manager) performHTTPHealthCheck(container *types.ContainerInfo) bool {
-	// Use curl to perform health check
-	url := fmt.Sprintf("http://localhost:%d%s", container.Port, container.HealthPath)
-	cmd := exec.Command("curl", "-f", "-s", "--max-time", "5", url)
-
-	err := cmd.Run()
-	if err != nil {
-		m.logger.Errorf("Health check failed for container %s at %s: %v", container.Name, url, err)
-		return false
-	}
-
-	return true
-}
-
-// configsEqual compares two container configurations for equality
-func (m *Manager) configsEqual(a, b types.ContainerConfig) bool {
-	if a.Name != b.Name || a.Image != b.Image || a.Port != b.Port || a.HealthPath != b.HealthPath {
-		return false
-	}
-
-	if len(a.Env) != len(b.Env) {
-		return false
-	}
-
-	for key, value := range a.Env {
-		if b.Env[key] != value {
-			return false
-		}
-	}
-
-	return true
-}
-
 // CheckContainerDrift checks if containers are in the desired state without logging synchronization messages
 func (m *Manager) CheckContainerDrift(configs []types.ContainerConfig) (bool, []types.ContainerConfig) {
 	var driftedContainers []types.ContainerConfig
@@ -407,33 +419,7 @@ func (m *Manager) CheckContainerDrift(configs []types.ContainerConfig) (bool, []
 	return len(driftedContainers) > 0, driftedContainers
 }
 
-// PullImage pulls a Docker image
-func (m *Manager) PullImage(image string) error {
-	m.logger.Infof("Pulling Docker image: %s", image)
-
-	cmd := exec.Command("docker", "pull", image)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to pull image %s: %w, output: %s", image, err, string(output))
-	}
-
-	m.logger.Infof("Successfully pulled image: %s", image)
-	return nil
-}
-
-// GetContainerLogs retrieves logs from a container
-func (m *Manager) GetContainerLogs(name string, lines int) (string, error) {
-	args := []string{"logs"}
-	if lines > 0 {
-		args = append(args, "--tail", strconv.Itoa(lines))
-	}
-	args = append(args, name)
-
-	cmd := exec.Command("docker", args...)
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to get logs for container %s: %w", name, err)
-	}
-
-	return string(output), nil
+// GetCurrentContainerState returns the current container state merged with desired state
+func (m *Manager) GetCurrentContainerState(desiredState *types.StateConfig) []types.ContainerConfig {
+	return m.DetectCurrentState(desiredState)
 }

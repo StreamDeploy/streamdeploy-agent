@@ -1,6 +1,7 @@
 package certificate
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -287,5 +288,61 @@ func (m *Manager) saveCertificateChain(leafCertPEM string, intermediateChain []s
 	}
 
 	m.logger.Info("Saved certificate files: device.crt (leaf), intermediate.crt, fullchain.crt")
+	return nil
+}
+
+// StartCertificateCheckLoop starts the certificate check loop
+func (m *Manager) StartCertificateCheckLoop(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		m.logger.Info("Certificate check interval is 0 or negative, skipping certificate checks")
+		return
+	}
+
+	m.logger.Infof("Certificate check loop started with interval: %v", interval)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Perform initial certificate check
+	if err := m.performCertificateCheck(); err != nil {
+		m.logger.Errorf("Initial certificate check failed: %v", err)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			m.logger.Info("Certificate check loop stopped")
+			return
+		case <-ticker.C:
+			if err := m.performCertificateCheck(); err != nil {
+				m.logger.Errorf("Certificate check failed: %v", err)
+			}
+		}
+	}
+}
+
+// performCertificateCheck checks certificate expiration and renews if necessary
+func (m *Manager) performCertificateCheck() error {
+	m.logger.Info("Performing certificate expiration check")
+
+	// Check if certificate is expiring within 30 days
+	if !m.IsCertificateExpiringSoon(30) {
+		m.logger.Info("Certificate is not expiring soon")
+		return nil
+	}
+
+	m.logger.Info("Certificate is expiring soon, initiating renewal")
+
+	// Get device configuration for renewal endpoint
+	// Note: This would need to be passed in or retrieved from config
+	// For now, we'll use a placeholder
+	enrollEndpoint := "https://api.streamdeploy.com/enroll" // This should come from config
+
+	// Renew the certificate
+	if err := m.RenewCertificate(m.deviceID, enrollEndpoint); err != nil {
+		return fmt.Errorf("failed to renew certificate: %w", err)
+	}
+
+	m.logger.Info("Certificate renewal completed successfully")
 	return nil
 }

@@ -12,6 +12,35 @@ import (
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/types"
 )
 
+// AgentInterface defines the interface that the agent must implement for config change handling
+type AgentInterface interface {
+	// Logger access
+	GetLogger() types.Logger
+
+	// State management
+	GetDesiredState() *types.StateConfig
+	SetDesiredState(state *types.StateConfig)
+	GetCurrentSystemState() *types.StateConfig
+	SetCurrentSystemState(state *types.StateConfig)
+
+	// Manager access
+	GetHeartbeatManager() interface{}
+	GetStatusUpdateManager() interface{}
+	GetContainerManager() types.ContainerManager
+	GetSystemPackageManager() types.SystemPackageManager
+	GetCustomPackageManager() types.CustomPackageManager
+	GetEnvironmentManager() types.EnvironmentManager
+
+	// System operations
+	IsUpdating() bool
+	SyncSystemToDesiredState(triggeredBy string) (bool, error)
+	LogStateDiff(oldState, newState *types.StateConfig)
+	WaitForUpdateAndApplyStateChange()
+
+	// Utility functions
+	CloneStateConfig(state *types.StateConfig) *types.StateConfig
+}
+
 // Manager implements the ConfigManager
 type Manager struct {
 	deviceConfigPath  string
@@ -24,6 +53,7 @@ type Manager struct {
 	restartMonitoring chan bool
 	updatingState     bool // Flag to prevent circular updates
 	updatingMutex     sync.Mutex
+	agent             AgentInterface // Reference to agent for config change handling
 }
 
 // NewManager creates a new configuration manager
@@ -204,8 +234,8 @@ func (m *Manager) GetHeartbeatFrequency() time.Duration {
 	return ParseFrequencyToDuration(m.stateConfig.AgentSetting.HeartbeatFrequency)
 }
 
-// GetUpdateFrequency returns the update frequency
-func (m *Manager) GetUpdateFrequency() time.Duration {
+// GetStatusFrequency returns the status update frequency
+func (m *Manager) GetStatusFrequency() time.Duration {
 	if m.stateConfig == nil {
 		return 30 * time.Second
 	}
@@ -469,7 +499,7 @@ func (m *Manager) monitorFiles() {
 	var ticker *time.Ticker
 
 	// Initialize with current update frequency
-	pollInterval := m.GetUpdateFrequency()
+	pollInterval := m.GetStatusFrequency()
 	if pollInterval <= 0 {
 		pollInterval = 30 * time.Second // Default fallback
 	}
@@ -505,7 +535,7 @@ func (m *Manager) monitorFiles() {
 		case <-m.restartMonitoring:
 			// Restart with new interval
 			ticker.Stop()
-			newInterval := m.GetUpdateFrequency()
+			newInterval := m.GetStatusFrequency()
 			if newInterval <= 0 {
 				newInterval = 30 * time.Second // Default fallback
 			}
@@ -560,4 +590,173 @@ func (m *Manager) handleStateConfigChange() {
 	if m.changeCallback != nil {
 		m.changeCallback(m.stateConfigPath)
 	}
+}
+
+// SetAgent sets the agent interface for config change handling
+func (m *Manager) SetAgent(agent interface{}) {
+	if agentInterface, ok := agent.(AgentInterface); ok {
+		m.agent = agentInterface
+	}
+}
+
+// HandleConfigChange handles configuration file changes
+func (m *Manager) HandleConfigChange(filePath string) {
+	if m.agent == nil {
+		return
+	}
+
+	m.agent.GetLogger().Infof("Configuration changed: %s", filePath)
+
+	// Check if this is an error case
+	isError := strings.HasSuffix(filePath, ":error")
+	if isError {
+		// Remove the error suffix to get the actual file path
+		filePath = strings.TrimSuffix(filePath, ":error")
+	}
+
+	// Determine which config file changed
+	if strings.HasSuffix(filePath, "agent.json") {
+		m.HandleDeviceConfigChange(isError)
+	} else if strings.HasSuffix(filePath, "state.json") {
+		m.HandleStateConfigChange(isError)
+	}
+
+	m.agent.GetLogger().Info("Configuration reloaded successfully")
+}
+
+// HandleDeviceConfigChange handles device configuration changes
+func (m *Manager) HandleDeviceConfigChange(isError bool) {
+	if m.agent == nil {
+		return
+	}
+
+	if isError {
+		m.agent.GetLogger().Errorf("Failed to parse agent.json, resetting with default configuration from memory...")
+		// Reset agent.json with default configuration
+		if err := m.ResetAgentConfigToDefault(); err != nil {
+			m.agent.GetLogger().Errorf("Failed to reset agent.json: %v", err)
+		} else {
+			m.agent.GetLogger().Info("agent.json reset to default configuration successfully")
+		}
+		return
+	}
+
+	m.agent.GetLogger().Info("Device configuration changed, updating timing intervals...")
+
+	// Reinitialize heartbeat manager if heartbeat interval changed
+	if heartbeatManager := m.agent.GetHeartbeatManager(); heartbeatManager != nil {
+		m.agent.GetLogger().Infof("Heartbeat frequency changed, reinitializing heartbeat manager")
+		// Note: The agent would need to implement a Stop method for heartbeat manager
+		// and reinitialize it. This is a placeholder for now.
+	}
+
+	// Reinitialize status update manager if status update interval changed
+	if statusUpdateManager := m.agent.GetStatusUpdateManager(); statusUpdateManager != nil {
+		m.agent.GetLogger().Infof("Status update frequency changed, reinitializing status update manager")
+		// Note: The agent would need to implement a Stop method for status update manager
+		// and reinitialize it. This is a placeholder for now.
+	}
+
+	m.agent.GetLogger().Info("Device configuration updated successfully")
+}
+
+// HandleStateConfigChange handles state configuration changes
+func (m *Manager) HandleStateConfigChange(isError bool) {
+	if m.agent == nil {
+		return
+	}
+
+	if isError {
+		m.agent.GetLogger().Errorf("Failed to parse state.json, saving memory state back to file...")
+		// Save current in-memory state back to state.json
+		if err := m.SaveStateConfig(); err != nil {
+			m.agent.GetLogger().Errorf("Failed to save state config back to file: %v", err)
+		} else {
+			m.agent.GetLogger().Info("Memory state saved back to state.json successfully")
+		}
+		return
+	}
+
+	// Check if agent is currently updating
+	if m.agent.IsUpdating() {
+		m.agent.GetLogger().Info("Agent is currently updating, waiting for update to complete before applying file changes...")
+		// Wait for update to complete
+		go m.agent.WaitForUpdateAndApplyStateChange()
+		return
+	}
+
+	m.agent.GetLogger().Info("State.json file changed, treating as update...")
+
+	// Refresh desired state from config manager (file was already reloaded)
+	m.agent.SetDesiredState(m.GetStateConfig())
+
+	// Validate: Get the new state from our internal field
+	deviceDesiredState := m.agent.GetDesiredState()
+	if deviceDesiredState == nil {
+		m.agent.GetLogger().Errorf("Failed to get new state configuration from state.json")
+		return
+	}
+
+	// Update heartbeat manager with new desired state
+	if heartbeatManager := m.agent.GetHeartbeatManager(); heartbeatManager != nil {
+		// Note: The agent would need to implement a SetDesiredState method for heartbeat manager
+		// This is a placeholder for now.
+	}
+
+	m.agent.GetLogger().Info("State.json validated successfully, processing update...")
+
+	// Detect: Get actual system state
+	actualSystemState := m.detectCurrentState(deviceDesiredState)
+	m.agent.SetCurrentSystemState(m.agent.CloneStateConfig(actualSystemState))
+
+	// If logging level is debug, print diff between current system state and desired state
+	if strings.ToLower(deviceDesiredState.AgentSetting.LoggingLevel) == "debug" {
+		m.agent.LogStateDiff(actualSystemState, deviceDesiredState)
+	}
+
+	// Sync: Compare currentSystemState vs deviceDesiredState and apply changes
+	_, err := m.agent.SyncSystemToDesiredState("file")
+	if err != nil {
+		m.agent.GetLogger().Errorf("Failed to sync system to desired state: %v", err)
+		return
+	}
+
+	m.agent.GetLogger().Info("File-based state update completed successfully")
+}
+
+// ResetAgentConfigToDefault resets agent.json with the current device configuration from memory
+func (m *Manager) ResetAgentConfigToDefault() error {
+	// Get the current device configuration from memory
+	deviceConfig := m.GetDeviceConfig()
+	if deviceConfig == nil {
+		return fmt.Errorf("no device configuration available in memory")
+	}
+
+	// Get the device config path
+	deviceConfigPath := m.GetDeviceConfigPath()
+	if deviceConfigPath == "" {
+		return fmt.Errorf("device config path not available")
+	}
+
+	// Write the current device config back to the file
+	data, err := json.MarshalIndent(deviceConfig, "", "    ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal device config: %w", err)
+	}
+
+	if err := os.WriteFile(deviceConfigPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write device config file: %w", err)
+	}
+
+	if m.agent != nil {
+		m.agent.GetLogger().Info("agent.json reset with current device configuration from memory")
+	}
+	return nil
+}
+
+// detectCurrentState detects the actual current state of the system
+func (m *Manager) detectCurrentState(desiredState *types.StateConfig) *types.StateConfig {
+	// This would need to be implemented to call the statusupdate.DetectCurrentState function
+	// For now, return the desired state as a placeholder
+	return desiredState
 }

@@ -7,12 +7,5 @@
     "os_name": "ubuntu",
     "os_version": "22.04",
     "architecture": "arm64",
-    "machine_type": "NVIDIA Jetson AGX Orin",
-    "package_manager": {
-        "type": "apt",
-        "install_cmd": "apt-get install -y",
-        "check_cmd": "dpkg -s",
-        "remove_cmd": "apt-get remove -y",
-        "update_cmd": "apt-get update"
-    }
+    "machine_type": "NVIDIA Jetson AGX Orin"
 }

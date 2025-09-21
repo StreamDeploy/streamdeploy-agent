@@ -1,21 +1,22 @@
 package types
 
 import (
+	"context"
 	"net"
 	"time"
 )
 
 // DeviceConfig represents the device configuration
 type DeviceConfig struct {
-	DeviceID           string               `json:"device_id"`
-	EnrollBaseURL      string               `json:"enroll_base_url"`
-	HTTPSMTLSEndpoint  string               `json:"https_mtls_endpoint"`
-	MQTTWSMTLSEndpoint string               `json:"mqtt_ws_mtls_endpoint"`
-	PKIDir             string               `json:"pki_dir"`
-	OSName             string               `json:"os_name"`
-	OSVersion          string               `json:"os_version"`
-	Architecture       string               `json:"architecture"`
-	PackageManager     PackageManagerConfig `json:"package_manager"`
+	DeviceID           string `json:"device_id"`
+	EnrollBaseURL      string `json:"enroll_base_url"`
+	HTTPSMTLSEndpoint  string `json:"https_mtls_endpoint"`
+	MQTTWSMTLSEndpoint string `json:"mqtt_ws_mtls_endpoint"`
+	PKIDir             string `json:"pki_dir"`
+	OSName             string `json:"os_name"`
+	OSVersion          string `json:"os_version"`
+	Architecture       string `json:"architecture"`
+	MachineType        string `json:"machine_type"`
 }
 
 // PackageManagerConfig represents package manager configuration
@@ -24,7 +25,6 @@ type PackageManagerConfig struct {
 	InstallCmd string `json:"install_cmd"`
 	CheckCmd   string `json:"check_cmd"`
 	RemoveCmd  string `json:"remove_cmd"`
-	UpdateCmd  string `json:"update_cmd"`
 }
 
 // StateConfig represents the state configuration
@@ -130,11 +130,14 @@ type ConfigManager interface {
 	GetMode() string
 	GetDeviceID() string
 	GetHeartbeatFrequency() time.Duration
-	GetUpdateFrequency() time.Duration
+	GetStatusFrequency() time.Duration
 	ReloadStateConfig() error
 	GetDeviceConfigPath() string
 	RestartMonitoring()
 	IsStateConfigEmpty(config *StateConfig) bool
+	HandleConfigChange(filePath string)
+	SetAgent(agent interface{})
+	HandleStateConfigChange(isError bool)
 }
 
 // MetricsCollector interface for metrics collection
@@ -171,19 +174,26 @@ type ContainerManager interface {
 	PerformHealthCheck(container *ContainerInfo) bool
 	SyncContainers(newConfigs, oldConfigs []ContainerConfig) (bool, error)
 	CheckContainerDrift(configs []ContainerConfig) (bool, []ContainerConfig)
+	GetRunningContainers() ([]ContainerConfig, error)
+	GetCurrentContainerState(desiredState *StateConfig) []ContainerConfig
 }
 
-// PackageManager interface for package management
-type PackageManager interface {
-	IsPackageInstalled(packageName string) bool
-	InstallPackage(packageName string) error
-	RemovePackage(packageName string) error
-	EnsurePackagesInstalled(packages []string) error
-	EnsureCustomPackagesInstalled(packages map[string]CustomPackage) error
-	SyncPackages(newPackages, oldPackages []string) (bool, error)
-	SyncCustomPackages(newPackages, oldPackages map[string]CustomPackage) (bool, error)
-	CheckPackageDrift(packages []string) (bool, []string)
-	CheckCustomPackageDrift(packages map[string]CustomPackage) (bool, map[string]CustomPackage)
+// SystemPackageManager interface for system package management
+type SystemPackageManager interface {
+	DetectCurrentState(desiredState *StateConfig) []string
+	CompareStates(currentState, desiredState []string) ([]string, []string)
+	Destroy(packages []string) error
+	Create(packages []string) error
+	StateConsolidation(currentState, desiredState []string) ([]string, error)
+}
+
+// CustomPackageManager interface for custom package management
+type CustomPackageManager interface {
+	DetectCurrentState(desiredState *StateConfig) map[string]CustomPackage
+	CompareStates(currentState, desiredState map[string]CustomPackage) (map[string]CustomPackage, map[string]CustomPackage)
+	Destroy(packages map[string]CustomPackage) ([]string, error)
+	Create(packages map[string]CustomPackage) ([]string, error)
+	StateConsolidation(currentState, desiredState map[string]CustomPackage) (map[string]CustomPackage, error)
 }
 
 // CertificateManager interface for certificate management
@@ -194,6 +204,7 @@ type CertificateManager interface {
 	GetCACertificatePath() string
 	GetCertificatePath() string
 	GetPrivateKeyPath() string
+	StartCertificateCheckLoop(ctx context.Context, interval time.Duration)
 }
 
 // EnvironmentManager interface for system environment management
@@ -241,4 +252,6 @@ type SSHTunnelManager interface {
 	SendHeartbeat() error
 	Reconnect() error
 	ResumeSession(sessionID string, channels []string) error
+	HandleCustomCommand(command string) error
+	HandleSSHTunnelCommand(command string) error
 }
