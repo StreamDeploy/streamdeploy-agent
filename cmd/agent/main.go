@@ -453,3 +453,50 @@ func (c *certificateManagerImpl) saveCertificateChain(leafCertPEM string, interm
 	c.logger.Info("Saved certificate files: device.crt (leaf), intermediate.crt, fullchain.crt")
 	return nil
 }
+
+// StartCertificateCheckLoop starts the certificate check loop in a goroutine
+func (c *certificateManagerImpl) StartCertificateCheckLoop(ctx context.Context, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				c.logger.Info("Certificate check loop stopped")
+				return
+			case <-ticker.C:
+				// Perform certificate check
+				c.performCertificateCheck()
+			}
+		}
+	}()
+}
+
+// performCertificateCheck checks if certificate is expiring and renews if necessary
+func (c *certificateManagerImpl) performCertificateCheck() {
+	certInfo, err := c.GetCertificateInfo()
+	if err != nil {
+		c.logger.Errorf("Failed to get certificate info: %v", err)
+		return
+	}
+
+	if certInfo.ExpiresAt.IsZero() {
+		c.logger.Info("Certificate expiration date not available")
+		return
+	}
+
+	// Check if certificate is expiring within 30 days
+	if c.IsCertificateExpiringSoon(30) {
+		c.logger.Errorf("Certificate is expiring soon at %v, attempting renewal", certInfo.ExpiresAt)
+
+		// Attempt to renew the certificate
+		// Note: You may need to adjust the enroll endpoint based on your configuration
+		enrollEndpoint := "https://api.streamdeploy.com/enroll" // This should come from config
+		if err := c.RenewCertificate(c.deviceID, enrollEndpoint); err != nil {
+			c.logger.Errorf("Failed to renew certificate: %v", err)
+		} else {
+			c.logger.Info("Certificate renewed successfully")
+		}
+	}
+}
