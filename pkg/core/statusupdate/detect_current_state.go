@@ -55,18 +55,7 @@ func DetectCurrentState(
 
 	// Detect custom packages using custom package manager's DetectCurrentState
 	if customPackageManager != nil && len(desiredState.CustomPackages) > 0 {
-		if detectorManager, ok := customPackageManager.(interface {
-			DetectCurrentState(*types.StateConfig) []string
-		}); ok {
-			currentCustomPackageNames := detectorManager.DetectCurrentState(desiredState)
-			// Convert []string to map[string]CustomPackage for current state
-			currentState.CustomPackages = make(map[string]types.CustomPackage)
-			for _, packageName := range currentCustomPackageNames {
-				if customPackage, exists := desiredState.CustomPackages[packageName]; exists {
-					currentState.CustomPackages[packageName] = customPackage
-				}
-			}
-		}
+		currentState.CustomPackages = customPackageManager.DetectCurrentState(desiredState)
 	}
 
 	// Detect environment variables using environment manager's DetectCurrentState
