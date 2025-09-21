@@ -279,17 +279,12 @@ func (a *CoreAgent) initializeStatusUpdateManager() {
 
 	a.statusUpdateManager = statusUpdateManager
 
-	// Initialize current system state by detecting actual system state
-	a.currentSystemState = statusupdate.DetectCurrentState(
-		a.desiredState,
-		a.containerManager,
-		a.systemPackageManager,
-		a.customPackageManager,
-		a.environmentManager,
-	)
+	// Initialize current system state as nil - it will be populated during status update loop
+	a.currentSystemState = nil
 
 	// Start status update loop
 	statusUpdateInterval := a.configManager.GetStatusFrequency()
+	a.logger.Infof("Starting status update loop with interval: %v", statusUpdateInterval)
 	if err := statusUpdateManager.StartStatusUpdateLoop(a.ctx, statusUpdateInterval, a.IsUpdating, a.IsSelfHealing); err != nil {
 		a.logger.Errorf("Failed to start status update loop: %v", err)
 	}

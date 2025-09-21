@@ -82,6 +82,7 @@ func (m *Manager) StartStatusUpdateLoop(ctx context.Context, interval time.Durat
 
 // statusUpdateLoop runs the status update loop
 func (m *Manager) statusUpdateLoop(ctx context.Context, interval time.Duration, isUpdating func() bool, isSelfHealing func() bool) {
+	m.logger.Infof("Starting status update loop with interval: %v", interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -96,6 +97,7 @@ func (m *Manager) statusUpdateLoop(ctx context.Context, interval time.Duration, 
 			m.running = false
 			return
 		case <-ticker.C:
+			m.logger.Infof("Status update ticker triggered, interval was: %v", interval)
 			// Skip update check if agent is updating or self-healing
 			if isUpdating() {
 				m.logger.Info("Skipping status update - agent is updating")

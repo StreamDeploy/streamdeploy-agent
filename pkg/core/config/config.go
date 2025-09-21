@@ -397,6 +397,9 @@ func ParseFrequencyToDuration(freq string) time.Duration {
 		return 15 * time.Second
 	}
 
+	// Debug logging
+	fmt.Printf("DEBUG: Parsing frequency string: '%s'\n", freq)
+
 	totalDuration := time.Duration(0)
 
 	// Parse compound frequency strings like "1m30s" or "2m 3s"
@@ -449,9 +452,11 @@ func ParseFrequencyToDuration(freq string) time.Duration {
 
 	// If no valid parts were parsed, return default
 	if totalDuration == 0 {
+		fmt.Printf("DEBUG: No valid parts parsed, returning default 15s\n")
 		return 15 * time.Second
 	}
 
+	fmt.Printf("DEBUG: Parsed duration: %v\n", totalDuration)
 	return totalDuration
 }
 
