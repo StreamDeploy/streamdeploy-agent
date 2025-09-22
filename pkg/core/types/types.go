@@ -85,26 +85,26 @@ type Device struct {
 
 // ContainerConfig represents a container configuration
 type ContainerConfig struct {
-	Name       string            `json:"name"`
-	Image      string            `json:"image"`
-	Ports      []PortMapping     `json:"ports,omitempty"` // Multiple port support
-	HealthPath string            `json:"health_path"`
-	Env        map[string]string `json:"env"`
-	EnvFile    string            `json:"env_file,omitempty"`    // Path to env file
-	Volumes    []VolumeMount     `json:"volumes,omitempty"`     // Volume mounts
-	WorkingDir string            `json:"working_dir,omitempty"` // Working directory
-	User       string            `json:"user,omitempty"`        // User to run as
-	Entrypoint []string          `json:"entrypoint,omitempty"`  // Entrypoint override
-	Hostname   string            `json:"hostname,omitempty"`    // Container hostname
-	Network    string            `json:"network,omitempty"`     // Network mode
-	Restart    string            `json:"restart,omitempty"`     // Restart policy
-	Resources  *ResourceLimit    `json:"resources,omitempty"`   // Resource limits
-	Labels     map[string]string `json:"labels,omitempty"`      // Container labels
-	Runtime    string            `json:"runtime,omitempty"`     // Container runtime
-	IPC        string            `json:"ipc,omitempty"`         // IPC mode
-	Ulimits    []Ulimit          `json:"ulimits,omitempty"`     // Ulimit settings
-	Devices    []Device          `json:"devices,omitempty"`     // Device mappings
-	Sysctls    map[string]string `json:"sysctls,omitempty"`     // Sysctl settings
+	Name       string            `json:"name"`                  // Required: Container name
+	Image      string            `json:"image"`                 // Required: Container image
+	Ports      []PortMapping     `json:"ports,omitempty"`       // Optional: Multiple port support
+	HealthPath string            `json:"health_path,omitempty"` // Optional: Health check path
+	Env        map[string]string `json:"env,omitempty"`         // Optional: Environment variables
+	EnvFile    string            `json:"env_file,omitempty"`    // Optional: Path to env file
+	Volumes    []VolumeMount     `json:"volumes,omitempty"`     // Optional: Volume mounts
+	WorkingDir string            `json:"working_dir,omitempty"` // Optional: Working directory
+	User       string            `json:"user,omitempty"`        // Optional: User to run as
+	Entrypoint []string          `json:"entrypoint,omitempty"`  // Optional: Entrypoint override
+	Hostname   string            `json:"hostname,omitempty"`    // Optional: Container hostname
+	Network    string            `json:"network,omitempty"`     // Optional: Network mode
+	Restart    string            `json:"restart,omitempty"`     // Optional: Restart policy
+	Resources  *ResourceLimit    `json:"resources,omitempty"`   // Optional: Resource limits
+	Labels     map[string]string `json:"labels,omitempty"`      // Optional: Container labels
+	Runtime    string            `json:"runtime,omitempty"`     // Optional: Container runtime
+	IPC        string            `json:"ipc,omitempty"`         // Optional: IPC mode
+	Ulimits    []Ulimit          `json:"ulimits,omitempty"`     // Optional: Ulimit settings
+	Devices    []Device          `json:"devices,omitempty"`     // Optional: Device mappings
+	Sysctls    map[string]string `json:"sysctls,omitempty"`     // Optional: Sysctl settings
 }
 
 // CustomPackage represents a custom package installation

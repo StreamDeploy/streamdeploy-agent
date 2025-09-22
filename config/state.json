@@ -9,6 +9,10 @@
     },
     "containers": [
         {
+            "name": "simple-app",
+            "image": "nginx:alpine"
+        },
+        {
             "name": "sd-app",
             "image": "ghcr.io/streamdeploy/streamdeploy-app:latest",
             "ports": [

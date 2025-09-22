@@ -226,8 +226,10 @@ func (m *Manager) StartContainer(config *types.ContainerConfig) error {
 	}
 
 	// Add environment variables
-	for key, value := range config.Env {
-		args = append(args, "-e", fmt.Sprintf("%s=%s", key, value))
+	if config.Env != nil {
+		for key, value := range config.Env {
+			args = append(args, "-e", fmt.Sprintf("%s=%s", key, value))
+		}
 	}
 
 	// Add environment file if specified
@@ -288,8 +290,10 @@ func (m *Manager) StartContainer(config *types.ContainerConfig) error {
 	}
 
 	// Add labels
-	for key, value := range config.Labels {
-		args = append(args, "-l", fmt.Sprintf("%s=%s", key, value))
+	if config.Labels != nil {
+		for key, value := range config.Labels {
+			args = append(args, "-l", fmt.Sprintf("%s=%s", key, value))
+		}
 	}
 
 	// Add runtime
@@ -317,8 +321,10 @@ func (m *Manager) StartContainer(config *types.ContainerConfig) error {
 	}
 
 	// Add sysctls
-	for key, value := range config.Sysctls {
-		args = append(args, "--sysctl", fmt.Sprintf("%s=%s", key, value))
+	if config.Sysctls != nil {
+		for key, value := range config.Sysctls {
+			args = append(args, "--sysctl", fmt.Sprintf("%s=%s", key, value))
+		}
 	}
 
 	// Add entrypoint if specified
