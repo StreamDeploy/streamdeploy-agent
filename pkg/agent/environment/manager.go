@@ -244,12 +244,12 @@ func (m *Manager) GetCurrentSystemEnvironment() (map[string]string, error) {
 // 3. Reports errors if failed
 // 4. Returns the updated current state based on what succeeded
 func (m *Manager) StateConsolidation(currentState, desiredState map[string]string) (map[string]string, error) {
-	m.logger.Info("Starting state consolidation for environment variables")
-	m.logger.Infof("Current state: %d variables, Desired state: %d variables", len(currentState), len(desiredState))
+	m.logger.Info("Environment variable state consolidation started")
+	m.logger.Debugf("Current state: %d variables, Desired state: %d variables", len(currentState), len(desiredState))
 
 	// Step 1: Compare states to determine what needs to be done
 	toDestroy, toCreate := m.CompareStates(currentState, desiredState)
-	m.logger.Infof("State comparison: %d to destroy, %d to create", len(toDestroy), len(toCreate))
+	m.logger.Debugf("State comparison: %d to destroy, %d to create", len(toDestroy), len(toCreate))
 
 	// Step 2: Apply changes if needed
 	if len(toDestroy) > 0 || len(toCreate) > 0 {
@@ -258,7 +258,7 @@ func (m *Manager) StateConsolidation(currentState, desiredState map[string]strin
 		// Apply changes in the correct order: destroy first, then create
 		if len(toDestroy) > 0 {
 			if err := m.Destroy(toDestroy); err != nil {
-				m.logger.Errorf("Failed to destroy environment variables: %v", err)
+				m.logger.Errorf("Environment variable destroy operation failed: %v", err)
 				// Return updated current state even if changes failed
 				updatedState := m.updateCurrentStateAfterChanges(currentState, toDestroy, toCreate)
 				return updatedState, err
@@ -267,7 +267,7 @@ func (m *Manager) StateConsolidation(currentState, desiredState map[string]strin
 
 		if len(toCreate) > 0 {
 			if err := m.Create(toCreate); err != nil {
-				m.logger.Errorf("Failed to create environment variables: %v", err)
+				m.logger.Errorf("Environment variable create operation failed: %v", err)
 				// Return updated current state even if changes failed
 				updatedState := m.updateCurrentStateAfterChanges(currentState, toDestroy, toCreate)
 				return updatedState, err
@@ -276,12 +276,12 @@ func (m *Manager) StateConsolidation(currentState, desiredState map[string]strin
 
 		m.logger.Info("Environment variable changes applied successfully")
 	} else {
-		m.logger.Info("No environment variable changes needed")
+		m.logger.Debug("No environment variable changes needed")
 	}
 
 	// Step 3: Return updated current state based on what succeeded
 	updatedCurrentState := m.updateCurrentStateAfterChanges(currentState, toDestroy, toCreate)
-	m.logger.Infof("State consolidation completed. Final state: %d variables", len(updatedCurrentState))
+	m.logger.Debugf("State consolidation completed. Final state: %d variables", len(updatedCurrentState))
 
 	return updatedCurrentState, nil
 }

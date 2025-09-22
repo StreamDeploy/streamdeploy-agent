@@ -454,6 +454,94 @@ func (a *CoreAgent) executeCommand(cmd interface{}) error {
 	return nil
 }
 
+// WaitForUpdateAndApplyStateChange waits for the current update to complete and then applies state changes
+func (a *CoreAgent) WaitForUpdateAndApplyStateChange() {
+	a.logger.Info("Waiting for current update to complete before applying state changes...")
+
+	// Wait for update to complete
+	for a.IsUpdating() {
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	a.logger.Info("Update completed, applying state changes...")
+
+	// Get the config manager and trigger state change handling
+	if a.configManager != nil {
+		a.configManager.HandleStateConfigChange(false)
+	}
+}
+
+// WaitForUpdateAndApplyDeviceChange waits for the current update to complete and then applies device configuration changes
+func (a *CoreAgent) WaitForUpdateAndApplyDeviceChange() {
+	a.logger.Info("Waiting for current update to complete before applying device configuration changes...")
+
+	// Wait for update to complete
+	for a.IsUpdating() {
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	a.logger.Info("Update completed, applying device configuration changes...")
+
+	// Get the config manager and trigger device change handling
+	if a.configManager != nil {
+		a.configManager.HandleDeviceConfigChange(false)
+	}
+}
+
+// LogStateDiff logs the differences between old and new state configurations
+func (a *CoreAgent) LogStateDiff(oldState, newState *types.StateConfig) {
+	if oldState == nil || newState == nil {
+		a.logger.Info("Cannot log state diff - one or both states are nil")
+		return
+	}
+
+	a.logger.Info("=== State Configuration Differences ===")
+
+	// Compare agent settings
+	if oldState.AgentSetting.HeartbeatFrequency != newState.AgentSetting.HeartbeatFrequency {
+		a.logger.Infof("Heartbeat frequency: %s -> %s", oldState.AgentSetting.HeartbeatFrequency, newState.AgentSetting.HeartbeatFrequency)
+	}
+	if oldState.AgentSetting.UpdateFrequency != newState.AgentSetting.UpdateFrequency {
+		a.logger.Infof("Update frequency: %s -> %s", oldState.AgentSetting.UpdateFrequency, newState.AgentSetting.UpdateFrequency)
+	}
+	if oldState.AgentSetting.Mode != newState.AgentSetting.Mode {
+		a.logger.Infof("Mode: %s -> %s", oldState.AgentSetting.Mode, newState.AgentSetting.Mode)
+	}
+	if oldState.AgentSetting.LoggingLevel != newState.AgentSetting.LoggingLevel {
+		a.logger.Infof("Logging level: %s -> %s", oldState.AgentSetting.LoggingLevel, newState.AgentSetting.LoggingLevel)
+	}
+
+	// Compare containers
+	oldContainerCount := len(oldState.Containers)
+	newContainerCount := len(newState.Containers)
+	if oldContainerCount != newContainerCount {
+		a.logger.Infof("Container count: %d -> %d", oldContainerCount, newContainerCount)
+	}
+
+	// Compare packages
+	oldPackageCount := len(oldState.Packages)
+	newPackageCount := len(newState.Packages)
+	if oldPackageCount != newPackageCount {
+		a.logger.Infof("Package count: %d -> %d", oldPackageCount, newPackageCount)
+	}
+
+	// Compare custom packages
+	oldCustomPackageCount := len(oldState.CustomPackages)
+	newCustomPackageCount := len(newState.CustomPackages)
+	if oldCustomPackageCount != newCustomPackageCount {
+		a.logger.Infof("Custom package count: %d -> %d", oldCustomPackageCount, newCustomPackageCount)
+	}
+
+	// Compare environment variables
+	oldEnvCount := len(oldState.Env)
+	newEnvCount := len(newState.Env)
+	if oldEnvCount != newEnvCount {
+		a.logger.Infof("Environment variable count: %d -> %d", oldEnvCount, newEnvCount)
+	}
+
+	a.logger.Info("=== End State Configuration Differences ===")
+}
+
 // cloneStateConfig makes a deep copy of a StateConfig
 func cloneStateConfig(s *types.StateConfig) *types.StateConfig {
 	if s == nil {

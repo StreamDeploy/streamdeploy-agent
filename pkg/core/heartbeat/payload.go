@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/types"
 )
@@ -47,23 +48,14 @@ func (b *PayloadBuilder) BuildHeartbeatPayload() (*types.HeartbeatPayload, error
 	// Check container health
 	containersHealthy := true
 	if b.containerManager != nil && len(b.desiredState.Containers) > 0 {
-		// Ensure containers are running
-		if err := b.containerManager.EnsureContainersRunning(b.desiredState.Containers); err != nil {
-			containersHealthy = false
-		}
+		// Get current container state with health checks
+		currentContainers := b.containerManager.DetectCurrentState(b.desiredState)
 
-		// Perform health checks
-		for _, containerConfig := range b.desiredState.Containers {
-			containerInfo := &types.ContainerInfo{
-				Name:       containerConfig.Name,
-				Image:      containerConfig.Image,
-				Port:       containerConfig.Port,
-				HealthPath: containerConfig.HealthPath,
-				Running:    b.containerManager.IsContainerRunning(containerConfig.Name),
-			}
-
-			if !b.containerManager.PerformHealthCheck(containerInfo) {
+		// Check if any containers have failed health checks (indicated by "failed" in HealthPath)
+		for _, container := range currentContainers {
+			if strings.HasSuffix(container.HealthPath, "failed") {
 				containersHealthy = false
+				break
 			}
 		}
 	}

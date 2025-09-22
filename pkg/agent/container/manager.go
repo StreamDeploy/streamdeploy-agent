@@ -21,8 +21,8 @@ func NewManager(logger types.Logger) *Manager {
 }
 
 // DetectCurrentState detects the current state of containers
-// For Docker containers, list all running containers and for those that exist in desired state,
-// add the extra fields from desired state. For containers not in desired state, include them as-is.
+// Gets all containers (desired + extra) and performs health checks
+// If health check fails, adds "failed" to the HealthPath
 func (m *Manager) DetectCurrentState(desiredState *types.StateConfig) []types.ContainerConfig {
 	var currentContainers []types.ContainerConfig
 
@@ -42,33 +42,50 @@ func (m *Manager) DetectCurrentState(desiredState *types.StateConfig) []types.Co
 		}
 	}
 
-	// For each running container, add it to current state
+	// For each running container, add it to current state with health check
 	for _, runningContainer := range runningContainers {
+		var containerConfig types.ContainerConfig
+
 		if desiredContainerMap != nil {
 			if desiredContainer, exists := desiredContainerMap[runningContainer.Name]; exists {
-				// Container exists in desired state, add it with all fields from desired state
-				currentContainers = append(currentContainers, types.ContainerConfig{
-					Name:       desiredContainer.Name,
-					Image:      desiredContainer.Image,
-					Port:       desiredContainer.Port,
-					HealthPath: desiredContainer.HealthPath,
-					Env:        desiredContainer.Env,
-				})
+				// Container exists in desired state, use desired config as base
+				containerConfig = desiredContainer
 			} else {
-				// Container not in desired state, add it as-is from running state
-				currentContainers = append(currentContainers, runningContainer)
+				// Container not in desired state, use running state as base
+				containerConfig = runningContainer
 			}
 		} else {
-			// No desired state, add all running containers as-is
-			currentContainers = append(currentContainers, runningContainer)
+			// No desired state, use running state as base
+			containerConfig = runningContainer
 		}
+
+		// Perform health check if container has health path and ports
+		if containerConfig.HealthPath != "" && len(containerConfig.Ports) > 0 {
+			// Use the first port for health check (could be enhanced to support multiple)
+			port := containerConfig.Ports[0].ContainerPort
+			containerInfo := &types.ContainerInfo{
+				Name:       containerConfig.Name,
+				Port:       port,
+				HealthPath: containerConfig.HealthPath,
+			}
+
+			// Perform health check
+			healthCheckPassed := m.PerformHealthCheck(containerInfo)
+			if !healthCheckPassed {
+				// Add "failed" to the health path to indicate health check failure
+				containerConfig.HealthPath = containerConfig.HealthPath + " failed"
+			}
+		}
+
+		currentContainers = append(currentContainers, containerConfig)
 	}
 
 	return currentContainers
 }
 
-// CompareStates compares current state with desired state and returns what needs to be destroyed and created
-// For containers, there's no update - if state is different, destroy old and create new
+// CompareStates compares current and desired states
+// Compares every single field in ContainerConfig and returns lists to destroy and create
+// For containers, update is done by destroy + create
 func (m *Manager) CompareStates(currentState, desiredState []types.ContainerConfig) ([]types.ContainerConfig, []types.ContainerConfig) {
 	// Create maps for easier lookup
 	currentMap := make(map[string]types.ContainerConfig)
@@ -84,25 +101,32 @@ func (m *Manager) CompareStates(currentState, desiredState []types.ContainerConf
 
 	var toDestroy, toCreate []types.ContainerConfig
 
-	// Find containers to destroy (in current but not in desired)
+	// Process all current containers
 	for name, currentConfig := range currentMap {
-		if _, exists := desiredMap[name]; !exists {
+		if desiredConfig, exists := desiredMap[name]; exists {
+			// Container exists in both current and desired states
+			// Compare every field to determine if recreation is needed
+			if !m.configsEqual(currentConfig, desiredConfig) {
+				// Configuration differs - destroy current and create desired
+				toDestroy = append(toDestroy, currentConfig)
+				toCreate = append(toCreate, desiredConfig)
+				m.logger.Debugf("Container %s needs recreation due to configuration differences", name)
+			} else {
+				m.logger.Debugf("Container %s configuration matches, no action needed", name)
+			}
+		} else {
+			// Container exists in current but not in desired - destroy it
 			toDestroy = append(toDestroy, currentConfig)
+			m.logger.Debugf("Container %s no longer needed, marked for destruction", name)
 		}
 	}
 
-	// Find containers to create or recreate (in desired)
+	// Process desired containers that don't exist in current state
 	for name, desiredConfig := range desiredMap {
-		if currentConfig, exists := currentMap[name]; exists {
-			// Container exists, check if it needs recreating
-			if !m.configsEqual(currentConfig, desiredConfig) {
-				// State is different - destroy old and create new
-				toDestroy = append(toDestroy, currentConfig)
-				toCreate = append(toCreate, desiredConfig)
-			}
-		} else {
-			// Container doesn't exist, needs to be created
+		if _, exists := currentMap[name]; !exists {
+			// Container exists in desired but not in current - create it
 			toCreate = append(toCreate, desiredConfig)
+			m.logger.Debugf("Container %s needs to be created", name)
 		}
 	}
 
@@ -198,78 +222,6 @@ func (m *Manager) IsContainerRunning(name string) bool {
 	return false
 }
 
-// StartContainer starts a container with the given configuration
-func (m *Manager) StartContainer(config *types.ContainerConfig) error {
-	if config == nil {
-		return fmt.Errorf("container config is nil")
-	}
-
-	m.logger.Infof("Starting container: %s", config.Name)
-
-	// Check if container already exists
-	if m.containerExists(config.Name) {
-		// If it exists but not running, start it
-		if !m.IsContainerRunning(config.Name) {
-			cmd := exec.Command("docker", "start", config.Name)
-			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("failed to start existing container %s: %w", config.Name, err)
-			}
-			m.logger.Infof("Started existing container: %s", config.Name)
-			return nil
-		}
-		m.logger.Infof("Container %s is already running", config.Name)
-		return nil
-	}
-
-	// Build docker run command
-	args := []string{"run", "-d", "--name", config.Name}
-
-	// Add port mapping if specified
-	if config.Port > 0 {
-		args = append(args, "-p", fmt.Sprintf("%d:%d", config.Port, config.Port))
-	}
-
-	// Add environment variables
-	for key, value := range config.Env {
-		args = append(args, "-e", fmt.Sprintf("%s=%s", key, value))
-	}
-
-	// Add restart policy
-	args = append(args, "--restart", "unless-stopped")
-
-	// Add image
-	args = append(args, config.Image)
-
-	// Execute docker run command
-	cmd := exec.Command("docker", args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to start container %s: %w, output: %s", config.Name, err, string(output))
-	}
-
-	m.logger.Infof("Successfully started container: %s", config.Name)
-	return nil
-}
-
-// StopContainer stops a running container
-func (m *Manager) StopContainer(name string) error {
-	if !m.IsContainerRunning(name) {
-		m.logger.Infof("Container %s is not running", name)
-		return nil
-	}
-
-	m.logger.Infof("Stopping container: %s", name)
-
-	cmd := exec.Command("docker", "stop", name)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to stop container %s: %w, output: %s", name, err, string(output))
-	}
-
-	m.logger.Infof("Successfully stopped container: %s", name)
-	return nil
-}
-
 // PerformHealthCheck performs a health check on a container
 func (m *Manager) PerformHealthCheck(container *types.ContainerInfo) bool {
 	if container == nil {
@@ -284,10 +236,22 @@ func (m *Manager) PerformHealthCheck(container *types.ContainerInfo) bool {
 
 	// If health path is specified, perform HTTP health check
 	if container.HealthPath != "" && container.Port > 0 {
-		return m.performHTTPHealthCheck(container)
+		// Use curl to perform health check
+		url := fmt.Sprintf("http://localhost:%d%s", container.Port, container.HealthPath)
+		cmd := exec.Command("curl", "-f", "-s", "--max-time", "5", url)
+
+		err := cmd.Run()
+		if err != nil {
+			m.logger.Errorf("Health check failed for container %s at %s: %v", container.Name, url, err)
+			return false
+		}
+
+		m.logger.Debugf("Health check passed for container %s at %s", container.Name, url)
+		return true
 	}
 
 	// If no health path specified, just check if container is running
+	m.logger.Debugf("Container %s is running (no health path specified)", container.Name)
 	return true
 }
 
@@ -302,138 +266,18 @@ func (m *Manager) EnsureContainersRunning(configs []types.ContainerConfig) error
 	return nil
 }
 
-// SyncContainers synchronizes containers based on new and old configurations
-func (m *Manager) SyncContainers(newConfigs, oldConfigs []types.ContainerConfig) (bool, error) {
-	// Check if there are any actual changes needed
-	hasChanges := false
-
-	// Create maps for easier lookup
-	newConfigMap := make(map[string]types.ContainerConfig)
-	oldConfigMap := make(map[string]types.ContainerConfig)
-
-	for _, config := range newConfigs {
-		newConfigMap[config.Name] = config
-	}
-
-	for _, config := range oldConfigs {
-		oldConfigMap[config.Name] = config
-	}
-
-	// Check for containers to remove
-	for name := range oldConfigMap {
-		if _, exists := newConfigMap[name]; !exists {
-			hasChanges = true
-			break
-		}
-	}
-
-	// Check for containers to add or update
-	if !hasChanges {
-		for name, newConfig := range newConfigMap {
-			oldConfig, exists := oldConfigMap[name]
-			if !exists || !m.configsEqual(oldConfig, newConfig) {
-				hasChanges = true
-				break
-			}
-		}
-	}
-
-	// If no changes needed, return early
-	if !hasChanges {
-		return false, nil
-	}
-
-	m.logger.Info("Synchronizing containers")
-
-	// Stop and remove containers that are no longer needed
-	for name := range oldConfigMap {
-		if _, exists := newConfigMap[name]; !exists {
-			m.logger.Infof("Removing container: %s", name)
-			if err := m.StopContainer(name); err != nil {
-				m.logger.Errorf("Failed to stop container %s: %v", name, err)
-			}
-			if err := m.removeContainer(name); err != nil {
-				m.logger.Errorf("Failed to remove container %s: %v", name, err)
-			}
-		}
-	}
-
-	// Start or update containers
-	for name, newConfig := range newConfigMap {
-		oldConfig, exists := oldConfigMap[name]
-
-		if !exists {
-			// New container, start it
-			m.logger.Infof("Starting new container: %s", name)
-			if err := m.StartContainer(&newConfig); err != nil {
-				return true, fmt.Errorf("failed to start new container %s: %w", name, err)
-			}
-		} else if !m.configsEqual(oldConfig, newConfig) {
-			// Configuration changed, recreate container
-			m.logger.Infof("Recreating container with updated config: %s", name)
-			if err := m.StopContainer(name); err != nil {
-				m.logger.Errorf("Failed to stop container %s: %v", name, err)
-			}
-			if err := m.removeContainer(name); err != nil {
-				m.logger.Errorf("Failed to remove container %s: %v", name, err)
-			}
-			if err := m.StartContainer(&newConfig); err != nil {
-				return true, fmt.Errorf("failed to recreate container %s: %w", name, err)
-			}
-		} else {
-			// Configuration unchanged, ensure it's running
-			if err := m.StartContainer(&newConfig); err != nil {
-				return true, fmt.Errorf("failed to ensure container %s is running: %w", name, err)
-			}
-		}
-	}
-
-	m.logger.Info("Container synchronization completed")
-	return true, nil
-}
-
-// CheckContainerDrift checks if containers are in the desired state without logging synchronization messages
-func (m *Manager) CheckContainerDrift(configs []types.ContainerConfig) (bool, []types.ContainerConfig) {
-	var driftedContainers []types.ContainerConfig
-
-	for _, config := range configs {
-		// Check if container is running
-		if !m.IsContainerRunning(config.Name) {
-			driftedContainers = append(driftedContainers, config)
-			continue
-		}
-
-		// If health path is provided, perform health check
-		if config.HealthPath != "" && config.Port > 0 {
-			containerInfo := &types.ContainerInfo{
-				Name:       config.Name,
-				Image:      config.Image,
-				Port:       config.Port,
-				HealthPath: config.HealthPath,
-				Running:    true,
-			}
-
-			if !m.PerformHealthCheck(containerInfo) {
-				driftedContainers = append(driftedContainers, config)
-			}
-		}
-	}
-
-	return len(driftedContainers) > 0, driftedContainers
-}
-
 // StateConsolidation performs a complete state consolidation process:
 // 1. Calls CompareStates to determine what needs to be done
 // 2. Applies Destroy and Create operations (no update for containers)
 // 3. Reports errors if failed
 // 4. Returns the updated current state based on what succeeded
 func (m *Manager) StateConsolidation(currentState, desiredState []types.ContainerConfig) ([]types.ContainerConfig, error) {
-	m.logger.Info("Starting state consolidation for containers")
-	m.logger.Infof("Current state: %d containers, Desired state: %d containers", len(currentState), len(desiredState))
+	m.logger.Info("Container state consolidation started")
+	m.logger.Debugf("Current state: %d containers, Desired state: %d containers", len(currentState), len(desiredState))
 
 	// Step 1: Compare states to determine what needs to be done
 	toDestroy, toCreate := m.CompareStates(currentState, desiredState)
-	m.logger.Infof("State comparison: %d to destroy, %d to create", len(toDestroy), len(toCreate))
+	m.logger.Debugf("State comparison: %d to destroy, %d to create", len(toDestroy), len(toCreate))
 
 	// Step 2: Apply changes if needed
 	if len(toDestroy) > 0 || len(toCreate) > 0 {
@@ -442,7 +286,7 @@ func (m *Manager) StateConsolidation(currentState, desiredState []types.Containe
 		// Apply changes in the correct order: destroy first, then create
 		if len(toDestroy) > 0 {
 			if err := m.Destroy(toDestroy); err != nil {
-				m.logger.Errorf("Failed to destroy containers: %v", err)
+				m.logger.Errorf("Container destroy operation failed: %v", err)
 				// Return updated current state even if changes failed
 				updatedState := m.updateCurrentStateAfterChanges(currentState, toDestroy, toCreate)
 				return updatedState, err
@@ -451,7 +295,7 @@ func (m *Manager) StateConsolidation(currentState, desiredState []types.Containe
 
 		if len(toCreate) > 0 {
 			if err := m.Create(toCreate); err != nil {
-				m.logger.Errorf("Failed to create containers: %v", err)
+				m.logger.Errorf("Container create operation failed: %v", err)
 				// Return updated current state even if changes failed
 				updatedState := m.updateCurrentStateAfterChanges(currentState, toDestroy, toCreate)
 				return updatedState, err
@@ -460,12 +304,12 @@ func (m *Manager) StateConsolidation(currentState, desiredState []types.Containe
 
 		m.logger.Info("Container changes applied successfully")
 	} else {
-		m.logger.Info("No container changes needed")
+		m.logger.Debug("No container changes needed")
 	}
 
 	// Step 3: Return updated current state based on what succeeded
 	updatedCurrentState := m.updateCurrentStateAfterChanges(currentState, toDestroy, toCreate)
-	m.logger.Infof("State consolidation completed. Final state: %d containers", len(updatedCurrentState))
+	m.logger.Debugf("State consolidation completed. Final state: %d containers", len(updatedCurrentState))
 
 	return updatedCurrentState, nil
 }
@@ -495,9 +339,4 @@ func (m *Manager) updateCurrentStateAfterChanges(currentState, destroyed, create
 	}
 
 	return result
-}
-
-// GetCurrentContainerState returns the current container state merged with desired state
-func (m *Manager) GetCurrentContainerState(desiredState *types.StateConfig) []types.ContainerConfig {
-	return m.DetectCurrentState(desiredState)
 }

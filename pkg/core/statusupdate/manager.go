@@ -141,16 +141,17 @@ func (m *Manager) statusUpdateLoop(ctx context.Context, interval time.Duration, 
 
 // performStatusUpdateCycle performs the complete status update cycle according to new requirements
 func (m *Manager) performStatusUpdateCycle() error {
-	m.logger.Info("Starting status update cycle")
+	m.logger.Info("Status update cycle started")
 
 	// Step 1: Get actual state (run the managers one by one)
-	m.logger.Info("Step 1: Detecting current actual state")
+	m.logger.Debug("Step 1: Detecting current actual state")
 	if err := m.detectCurrentState(); err != nil {
+		m.logger.Errorf("Failed to detect current state: %v", err)
 		return fmt.Errorf("failed to detect current state: %w", err)
 	}
 
 	// Step 2: Send API with current state
-	m.logger.Info("Step 2: Sending status update with current state")
+	m.logger.Debug("Step 2: Sending status update with current state")
 	apiResponse, apiError := m.sendStatusUpdateAPI()
 
 	// Step 3: Process API response - update desired state if new_state received
@@ -158,7 +159,7 @@ func (m *Manager) performStatusUpdateCycle() error {
 	var command interface{}
 
 	if apiError == nil && apiResponse != nil {
-		m.logger.Info("Step 3: Processing API response")
+		m.logger.Debug("Step 3: Processing API response")
 		newState, cmd, err := m.processAPIResponse(apiResponse)
 		if err != nil {
 			m.logger.Errorf("Failed to process API response: %v", err)
@@ -170,7 +171,7 @@ func (m *Manager) performStatusUpdateCycle() error {
 				if err := m.configManager.UpdateStateConfig(newState); err != nil {
 					m.logger.Errorf("Failed to save new state to config: %v", err)
 				} else {
-					m.logger.Info("New desired state saved to config successfully")
+					m.logger.Debug("New desired state saved to config successfully")
 				}
 			}
 			if cmd != nil {
@@ -179,24 +180,26 @@ func (m *Manager) performStatusUpdateCycle() error {
 				m.logger.Infof("Received command from API: %v", cmd)
 			}
 		}
+	} else if apiError != nil {
+		m.logger.Errorf("API call failed: %v", apiError)
 	}
 
 	// Step 4: Execute command if present (before state consolidation)
 	if hasCommand {
-		m.logger.Info("Step 4: Executing command")
+		m.logger.Info("Executing command")
 		if err := m.agent.ExecuteCommand(command); err != nil {
 			m.logger.Errorf("Command execution failed: %v", err)
 		} else {
-			m.logger.Info("Command executed successfully")
+			m.logger.Debug("Command executed successfully")
 		}
 	}
 
 	// Step 5: Individual manager state comparison and consolidation
-	m.logger.Info("Step 5: Performing state consolidation")
+	m.logger.Debug("Step 5: Performing state consolidation")
 	consolidationErrors := m.performStateConsolidation()
 
 	// Step 6: Collect all errors and send feedback to backend
-	m.logger.Info("Step 6: Collecting results and sending feedback")
+	m.logger.Debug("Step 6: Collecting results and sending feedback")
 	if err := m.sendConsolidationFeedback(apiError, consolidationErrors); err != nil {
 		m.logger.Errorf("Failed to send consolidation feedback: %v", err)
 	}
@@ -301,7 +304,9 @@ func (m *Manager) performStateConsolidation() map[string]error {
 	// Container state consolidation
 	if m.containerManager != nil {
 		m.logger.Info("Performing container state consolidation")
-		if err := m.consolidateContainerState(desiredState); err != nil {
+		currentContainers := m.currentState.Containers
+		desiredContainers := desiredState.Containers
+		if _, err := m.containerManager.StateConsolidation(currentContainers, desiredContainers); err != nil {
 			errors["containers"] = err
 			m.logger.Errorf("Container state consolidation failed: %v", err)
 		} else {
@@ -312,7 +317,9 @@ func (m *Manager) performStateConsolidation() map[string]error {
 	// System package state consolidation
 	if m.systemPackageManager != nil {
 		m.logger.Info("Performing system package state consolidation")
-		if err := m.consolidateSystemPackageState(desiredState); err != nil {
+		currentPackages := m.currentState.Packages
+		desiredPackages := desiredState.Packages
+		if _, err := m.systemPackageManager.StateConsolidation(currentPackages, desiredPackages); err != nil {
 			errors["system_packages"] = err
 			m.logger.Errorf("System package state consolidation failed: %v", err)
 		} else {
@@ -323,7 +330,9 @@ func (m *Manager) performStateConsolidation() map[string]error {
 	// Custom package state consolidation
 	if m.customPackageManager != nil {
 		m.logger.Info("Performing custom package state consolidation")
-		if err := m.consolidateCustomPackageState(desiredState); err != nil {
+		currentCustomPackages := m.currentState.CustomPackages
+		desiredCustomPackages := desiredState.CustomPackages
+		if _, err := m.customPackageManager.StateConsolidation(currentCustomPackages, desiredCustomPackages); err != nil {
 			errors["custom_packages"] = err
 			m.logger.Errorf("Custom package state consolidation failed: %v", err)
 		} else {
@@ -334,7 +343,8 @@ func (m *Manager) performStateConsolidation() map[string]error {
 	// Environment state consolidation
 	if m.environmentManager != nil {
 		m.logger.Info("Performing environment state consolidation")
-		if err := m.consolidateEnvironmentState(desiredState); err != nil {
+		desiredEnv := desiredState.Env
+		if err := m.environmentManager.SyncSystemEnvironment(desiredEnv); err != nil {
 			errors["environment"] = err
 			m.logger.Errorf("Environment state consolidation failed: %v", err)
 		} else {
@@ -343,44 +353,6 @@ func (m *Manager) performStateConsolidation() map[string]error {
 	}
 
 	return errors
-}
-
-// consolidateContainerState performs container state consolidation
-func (m *Manager) consolidateContainerState(desiredState *types.StateConfig) error {
-	currentContainers := m.currentState.Containers
-	desiredContainers := desiredState.Containers
-
-	// Use container manager's sync method
-	_, err := m.containerManager.SyncContainers(desiredContainers, currentContainers)
-	return err
-}
-
-// consolidateSystemPackageState performs system package state consolidation
-func (m *Manager) consolidateSystemPackageState(desiredState *types.StateConfig) error {
-	currentPackages := m.currentState.Packages
-	desiredPackages := desiredState.Packages
-
-	// Use system package manager's state consolidation
-	_, err := m.systemPackageManager.StateConsolidation(currentPackages, desiredPackages)
-	return err
-}
-
-// consolidateCustomPackageState performs custom package state consolidation
-func (m *Manager) consolidateCustomPackageState(desiredState *types.StateConfig) error {
-	currentCustomPackages := m.currentState.CustomPackages
-	desiredCustomPackages := desiredState.CustomPackages
-
-	// Use custom package manager's state consolidation
-	_, err := m.customPackageManager.StateConsolidation(currentCustomPackages, desiredCustomPackages)
-	return err
-}
-
-// consolidateEnvironmentState performs environment state consolidation
-func (m *Manager) consolidateEnvironmentState(desiredState *types.StateConfig) error {
-	desiredEnv := desiredState.Env
-
-	// Use environment manager's sync method
-	return m.environmentManager.SyncSystemEnvironment(desiredEnv)
 }
 
 // sendConsolidationFeedback sends feedback about the consolidation results to backend

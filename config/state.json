@@ -11,27 +11,197 @@
         {
             "name": "sd-app",
             "image": "ghcr.io/streamdeploy/streamdeploy-app:latest",
-            "port": 80,
+            "ports": [
+                {
+                    "host_port": 80,
+                    "container_port": 80,
+                    "protocol": "tcp"
+                }
+            ],
             "health_path": "/health",
-            "env": {}
+            "env": {
+                "APP_ENV": "production",
+                "LOG_LEVEL": "info"
+            },
+            "volumes": [
+                {
+                    "source": "/var/log/sd-app",
+                    "destination": "/app/logs",
+                    "mode": "rw"
+                }
+            ],
+            "working_dir": "/app",
+            "user": "1000:1000",
+            "hostname": "sd-app-container",
+            "network": "bridge",
+            "restart": "unless-stopped",
+            "resources": {
+                "memory": "512m",
+                "cpus": "1.0",
+                "memory_swap": "1g",
+                "shm_size": "64m"
+            },
+            "labels": {
+                "app": "streamdeploy",
+                "version": "latest",
+                "environment": "production"
+            },
+            "runtime": "runc",
+            "ipc": "host",
+            "ulimits": [
+                {
+                    "name": "nofile",
+                    "soft": 65536,
+                    "hard": 65536
+                }
+            ],
+            "devices": [
+                {
+                    "path_on_host": "/dev/null",
+                    "path_in_container": "/dev/null",
+                    "permissions": "rwm"
+                }
+            ],
+            "sysctls": {
+                "net.core.somaxconn": "65535"
+            }
         },
         {
             "name": "nginx-web",
             "image": "nginx:alpine",
-            "port": 8080,
+            "ports": [
+                {
+                    "host_port": 8080,
+                    "container_port": 80,
+                    "protocol": "tcp"
+                },
+                {
+                    "host_port": 8443,
+                    "container_port": 443,
+                    "protocol": "tcp"
+                }
+            ],
             "health_path": "/",
             "env": {
-                "NGINX_PORT": "8080"
+                "NGINX_PORT": "80",
+                "NGINX_SSL_PORT": "443"
+            },
+            "env_file": "/etc/nginx/nginx.env",
+            "volumes": [
+                {
+                    "source": "/var/www/html",
+                    "destination": "/usr/share/nginx/html",
+                    "mode": "ro"
+                },
+                {
+                    "source": "/etc/nginx/conf.d",
+                    "destination": "/etc/nginx/conf.d",
+                    "mode": "ro"
+                }
+            ],
+            "working_dir": "/etc/nginx",
+            "user": "nginx",
+            "hostname": "nginx-server",
+            "network": "bridge",
+            "restart": "always",
+            "resources": {
+                "memory": "256m",
+                "cpus": "0.5"
+            },
+            "labels": {
+                "service": "web",
+                "role": "reverse-proxy"
             }
         },
         {
             "name": "redis-cache",
             "image": "redis:alpine",
-            "port": 6379,
+            "ports": [
+                {
+                    "host_port": 6379,
+                    "container_port": 6379,
+                    "protocol": "tcp"
+                }
+            ],
             "health_path": "",
             "env": {
-                "REDIS_PASSWORD": "mypassword"
+                "REDIS_PASSWORD": "mypassword",
+                "REDIS_MAXMEMORY": "256mb"
+            },
+            "volumes": [
+                {
+                    "source": "/var/lib/redis",
+                    "destination": "/data",
+                    "mode": "rw"
+                }
+            ],
+            "working_dir": "/data",
+            "user": "999:999",
+            "hostname": "redis-cache",
+            "network": "bridge",
+            "restart": "unless-stopped",
+            "resources": {
+                "memory": "256m",
+                "cpus": "0.5"
+            },
+            "labels": {
+                "service": "cache",
+                "database": "redis"
+            },
+            "sysctls": {
+                "net.core.somaxconn": "65535"
             }
+        },
+        {
+            "name": "postgres-db",
+            "image": "postgres:15-alpine",
+            "ports": [
+                {
+                    "host_port": 5432,
+                    "container_port": 5432,
+                    "protocol": "tcp"
+                }
+            ],
+            "health_path": "",
+            "env": {
+                "POSTGRES_DB": "streamdeploy",
+                "POSTGRES_USER": "admin",
+                "POSTGRES_PASSWORD": "secretpassword",
+                "POSTGRES_INITDB_ARGS": "--auth-host=scram-sha-256"
+            },
+            "volumes": [
+                {
+                    "source": "/var/lib/postgresql/data",
+                    "destination": "/var/lib/postgresql/data",
+                    "mode": "rw"
+                },
+                {
+                    "source": "/etc/postgresql/init",
+                    "destination": "/docker-entrypoint-initdb.d",
+                    "mode": "ro"
+                }
+            ],
+            "working_dir": "/var/lib/postgresql",
+            "user": "postgres",
+            "hostname": "postgres-server",
+            "network": "bridge",
+            "restart": "unless-stopped",
+            "resources": {
+                "memory": "1g",
+                "cpus": "1.0",
+                "memory_swap": "2g"
+            },
+            "labels": {
+                "service": "database",
+                "database": "postgresql"
+            },
+            "ulimits": [
+                {
+                    "name": "memlock",
+                    "soft": -1,
+                    "hard": -1
+                }
+            ]
         }
     ],
     "env": {

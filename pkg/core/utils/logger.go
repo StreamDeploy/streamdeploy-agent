@@ -40,6 +40,17 @@ func (l *SimpleLogger) Errorf(format string, args ...interface{}) {
 	l.Error(msg)
 }
 
+// Debug logs a debug message
+func (l *SimpleLogger) Debug(msg string) {
+	l.log("DEBUG", msg)
+}
+
+// Debugf logs a formatted debug message
+func (l *SimpleLogger) Debugf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	l.Debug(msg)
+}
+
 // log is the internal logging function
 func (l *SimpleLogger) log(level, msg string) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")

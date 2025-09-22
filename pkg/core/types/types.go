@@ -47,13 +47,64 @@ type AgentSetting struct {
 	LoggingLevel       string `json:"logging_level"`
 }
 
+// VolumeMount represents a volume mount configuration
+type VolumeMount struct {
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	Mode        string `json:"mode,omitempty"` // "ro" for read-only, empty for read-write
+}
+
+// PortMapping represents a port mapping configuration
+type PortMapping struct {
+	HostPort      int    `json:"host_port"`
+	ContainerPort int    `json:"container_port"`
+	Protocol      string `json:"protocol,omitempty"` // "tcp", "udp", empty defaults to "tcp"
+}
+
+// ResourceLimit represents resource limit configuration
+type ResourceLimit struct {
+	Memory     string `json:"memory,omitempty"`      // e.g., "512m", "1g"
+	CPUs       string `json:"cpus,omitempty"`        // e.g., "1.5", "2"
+	MemorySwap string `json:"memory_swap,omitempty"` // e.g., "1g", "-1" for unlimited
+	ShmSize    string `json:"shm_size,omitempty"`    // e.g., "64m"
+}
+
+// Ulimit represents a ulimit configuration
+type Ulimit struct {
+	Name string `json:"name"` // e.g., "nofile", "nproc"
+	Soft int    `json:"soft"`
+	Hard int    `json:"hard"`
+}
+
+// Device represents a device mapping configuration
+type Device struct {
+	PathOnHost      string `json:"path_on_host"`
+	PathInContainer string `json:"path_in_container"`
+	Permissions     string `json:"permissions,omitempty"` // e.g., "rwm"
+}
+
 // ContainerConfig represents a container configuration
 type ContainerConfig struct {
 	Name       string            `json:"name"`
 	Image      string            `json:"image"`
-	Port       int               `json:"port"`
+	Ports      []PortMapping     `json:"ports,omitempty"` // Multiple port support
 	HealthPath string            `json:"health_path"`
 	Env        map[string]string `json:"env"`
+	EnvFile    string            `json:"env_file,omitempty"`    // Path to env file
+	Volumes    []VolumeMount     `json:"volumes,omitempty"`     // Volume mounts
+	WorkingDir string            `json:"working_dir,omitempty"` // Working directory
+	User       string            `json:"user,omitempty"`        // User to run as
+	Entrypoint []string          `json:"entrypoint,omitempty"`  // Entrypoint override
+	Hostname   string            `json:"hostname,omitempty"`    // Container hostname
+	Network    string            `json:"network,omitempty"`     // Network mode
+	Restart    string            `json:"restart,omitempty"`     // Restart policy
+	Resources  *ResourceLimit    `json:"resources,omitempty"`   // Resource limits
+	Labels     map[string]string `json:"labels,omitempty"`      // Container labels
+	Runtime    string            `json:"runtime,omitempty"`     // Container runtime
+	IPC        string            `json:"ipc,omitempty"`         // IPC mode
+	Ulimits    []Ulimit          `json:"ulimits,omitempty"`     // Ulimit settings
+	Devices    []Device          `json:"devices,omitempty"`     // Device mappings
+	Sysctls    map[string]string `json:"sysctls,omitempty"`     // Sysctl settings
 }
 
 // CustomPackage represents a custom package installation
@@ -92,14 +143,11 @@ type HTTPResponse struct {
 	Headers    map[string]string
 }
 
-// ContainerInfo represents container runtime information
+// ContainerInfo represents container runtime information for health checks
 type ContainerInfo struct {
 	Name       string
-	Image      string
 	Port       int
 	HealthPath string
-	Running    bool
-	Healthy    bool
 }
 
 // CertificateInfo represents certificate information
@@ -114,8 +162,10 @@ type CertificateInfo struct {
 type Logger interface {
 	Info(msg string)
 	Error(msg string)
+	Debug(msg string)
 	Infof(format string, args ...interface{})
 	Errorf(format string, args ...interface{})
+	Debugf(format string, args ...interface{})
 }
 
 // ConfigManager interface for configuration management
@@ -138,6 +188,7 @@ type ConfigManager interface {
 	HandleConfigChange(filePath string)
 	SetAgent(agent interface{})
 	HandleStateConfigChange(isError bool)
+	HandleDeviceConfigChange(isError bool)
 }
 
 // MetricsCollector interface for metrics collection
@@ -167,15 +218,11 @@ type MQTTClient interface {
 
 // ContainerManager interface for container management
 type ContainerManager interface {
-	IsContainerRunning(name string) bool
-	StartContainer(config *ContainerConfig) error
-	StopContainer(name string) error
-	EnsureContainersRunning(configs []ContainerConfig) error
-	PerformHealthCheck(container *ContainerInfo) bool
-	SyncContainers(newConfigs, oldConfigs []ContainerConfig) (bool, error)
-	CheckContainerDrift(configs []ContainerConfig) (bool, []ContainerConfig)
-	GetRunningContainers() ([]ContainerConfig, error)
-	GetCurrentContainerState(desiredState *StateConfig) []ContainerConfig
+	DetectCurrentState(desiredState *StateConfig) []ContainerConfig
+	CompareStates(currentState, desiredState []ContainerConfig) ([]ContainerConfig, []ContainerConfig)
+	Destroy(containers []ContainerConfig) error
+	Create(containers []ContainerConfig) error
+	StateConsolidation(currentState, desiredState []ContainerConfig) ([]ContainerConfig, error)
 }
 
 // SystemPackageManager interface for system package management

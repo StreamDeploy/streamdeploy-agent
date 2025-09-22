@@ -429,11 +429,47 @@ func containersEqual(a, b []types.ContainerConfig) bool {
 
 // containerConfigEqual compares two ContainerConfig structs for equality
 func containerConfigEqual(a, b types.ContainerConfig) bool {
-	return a.Name == b.Name &&
-		a.Image == b.Image &&
-		a.Port == b.Port &&
-		a.HealthPath == b.HealthPath &&
-		envMapsEqual(a.Env, b.Env)
+	// Compare basic fields
+	if a.Name != b.Name || a.Image != b.Image || a.HealthPath != b.HealthPath {
+		return false
+	}
+
+	// Compare environment variables
+	if !envMapsEqual(a.Env, b.Env) {
+		return false
+	}
+
+	// Compare port mappings
+	if len(a.Ports) != len(b.Ports) {
+		return false
+	}
+	for i, portA := range a.Ports {
+		portB := b.Ports[i]
+		if portA.HostPort != portB.HostPort || portA.ContainerPort != portB.ContainerPort || portA.Protocol != portB.Protocol {
+			return false
+		}
+	}
+
+	// Compare other fields that might be relevant for basic equality checks
+	if a.EnvFile != b.EnvFile || a.WorkingDir != b.WorkingDir || a.User != b.User ||
+		a.Hostname != b.Hostname || a.Network != b.Network || a.Restart != b.Restart ||
+		a.Runtime != b.Runtime || a.IPC != b.IPC {
+		return false
+	}
+
+	// Compare labels
+	if !envMapsEqual(a.Labels, b.Labels) {
+		return false
+	}
+
+	// Compare sysctls
+	if !envMapsEqual(a.Sysctls, b.Sysctls) {
+		return false
+	}
+
+	// Note: For a basic equality check, we're not comparing all fields like volumes, resources, etc.
+	// This is a simplified comparison for status update purposes.
+	return true
 }
 
 // packagesEqual compares two string slices for equality (order-independent)

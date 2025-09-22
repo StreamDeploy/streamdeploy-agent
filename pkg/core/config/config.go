@@ -36,6 +36,7 @@ type AgentInterface interface {
 	SyncSystemToDesiredState(triggeredBy string) (bool, error)
 	LogStateDiff(oldState, newState *types.StateConfig)
 	WaitForUpdateAndApplyStateChange()
+	WaitForUpdateAndApplyDeviceChange()
 
 	// Utility functions
 	CloneStateConfig(state *types.StateConfig) *types.StateConfig
@@ -397,9 +398,6 @@ func ParseFrequencyToDuration(freq string) time.Duration {
 		return 15 * time.Second
 	}
 
-	// Debug logging
-	fmt.Printf("DEBUG: Parsing frequency string: '%s'\n", freq)
-
 	totalDuration := time.Duration(0)
 
 	// Parse compound frequency strings like "1m30s" or "2m 3s"
@@ -452,11 +450,10 @@ func ParseFrequencyToDuration(freq string) time.Duration {
 
 	// If no valid parts were parsed, return default
 	if totalDuration == 0 {
-		fmt.Printf("DEBUG: No valid parts parsed, returning default 15s\n")
+		fmt.Printf("No valid parts parsed, returning default 15s\n")
 		return 15 * time.Second
 	}
 
-	fmt.Printf("DEBUG: Parsed duration: %v\n", totalDuration)
 	return totalDuration
 }
 
@@ -519,10 +516,16 @@ func (m *Manager) monitorFiles() {
 	for {
 		select {
 		case <-ticker.C:
-			// Check device config
+			// Check device config (only if not currently updating)
 			if newModTime := m.getFileModTime(m.deviceConfigPath); newModTime.After(deviceConfigModTime) {
-				deviceConfigModTime = newModTime
-				m.handleDeviceConfigChange()
+				m.updatingMutex.Lock()
+				isUpdating := m.updatingState
+				m.updatingMutex.Unlock()
+
+				if !isUpdating {
+					deviceConfigModTime = newModTime
+					m.handleDeviceConfigChange()
+				}
 			}
 
 			// Check state config (only if not currently updating)
@@ -643,6 +646,14 @@ func (m *Manager) HandleDeviceConfigChange(isError bool) {
 		} else {
 			m.agent.GetLogger().Info("agent.json reset to default configuration successfully")
 		}
+		return
+	}
+
+	// Check if agent is currently updating
+	if m.agent.IsUpdating() {
+		m.agent.GetLogger().Info("Agent is currently updating, waiting for update to complete before applying device configuration changes...")
+		// Wait for update to complete
+		go m.agent.WaitForUpdateAndApplyDeviceChange()
 		return
 	}
 
