@@ -2,19 +2,44 @@ package statusupdate
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/types"
 )
 
+// AgentInterface defines the interface that the agent must implement for statusupdate callbacks
+type AgentInterface interface {
+	// Logger access
+	GetLogger() types.Logger
+
+	// Config management
+	GetConfigManager() types.ConfigManager
+	GetDesiredState() *types.StateConfig
+	SetDesiredState(state *types.StateConfig)
+	GetCurrentSystemState() *types.StateConfig
+	SetCurrentSystemState(state *types.StateConfig)
+
+	// Manager access
+	GetContainerManager() types.ContainerManager
+	GetSystemPackageManager() types.SystemPackageManager
+	GetCustomPackageManager() types.CustomPackageManager
+	GetEnvironmentManager() types.EnvironmentManager
+	GetStatusUpdateManager() interface{}
+
+	// System operations
+	ExecuteCommand(cmd interface{}) error
+	SyncSystemToDesiredState(triggeredBy string) (bool, error)
+	VerifyAndCorrectSystemState(desiredState *types.StateConfig) error
+
+	// Utility functions
+	CloneStateConfig(state *types.StateConfig) *types.StateConfig
+}
+
 // ManagerInterface defines the interface for status update management
 type ManagerInterface interface {
 	StartStatusUpdateLoop(ctx context.Context, interval time.Duration, isUpdating func() bool, isSelfHealing func() bool) error
-	StartAgentUpdateLoop(ctx context.Context, interval time.Duration, isUpdating func() bool) error
-	SendStatusUpdate(updateType string) error
-	CheckForAgentUpdate() error
-	VerifyAndCorrectSystemStateWithFeedback(state *types.StateConfig, triggeredBy string) (*SelfHealingResult, error)
 	Stop()
 }
 
@@ -25,49 +50,48 @@ type Manager struct {
 	logger               types.Logger
 	running              bool
 	stopChan             chan struct{}
-	responseHandler      StatusUpdateResponseHandler
 	containerManager     types.ContainerManager
 	systemPackageManager types.SystemPackageManager
 	customPackageManager types.CustomPackageManager
 	environmentManager   types.EnvironmentManager
-	desiredState         *types.StateConfig
+	configManager        types.ConfigManager
+	agent                AgentInterface
 	currentState         *types.StateConfig
 }
 
-// NewManager creates a new status update manager
+// NewManager creates a new status update manager with the new architecture
 func NewManager(
 	httpClient types.HTTPClient,
 	mqttClient types.MQTTClient,
 	deviceID string,
 	mode string,
-	cloneStateConfig func(*types.StateConfig) *types.StateConfig,
-	responseHandler StatusUpdateResponseHandler,
 	logger types.Logger,
 	containerManager types.ContainerManager,
 	systemPackageManager types.SystemPackageManager,
 	customPackageManager types.CustomPackageManager,
 	environmentManager types.EnvironmentManager,
-	desiredState *types.StateConfig,
+	configManager types.ConfigManager,
+	agent AgentInterface,
 ) *Manager {
 	baseSender := NewStatusUpdateSender(httpClient, mqttClient, deviceID, mode, logger)
 
 	return &Manager{
 		StatusUpdateSender:   baseSender.(*StatusUpdateSender),
-		payloadBuilder:       NewPayloadBuilder(cloneStateConfig),
+		payloadBuilder:       NewPayloadBuilder(agent.CloneStateConfig),
 		logger:               logger,
 		stopChan:             make(chan struct{}),
 		running:              false,
-		responseHandler:      responseHandler,
 		containerManager:     containerManager,
 		systemPackageManager: systemPackageManager,
 		customPackageManager: customPackageManager,
 		environmentManager:   environmentManager,
-		desiredState:         desiredState,
+		configManager:        configManager,
+		agent:                agent,
 		currentState:         nil,
 	}
 }
 
-// StartStatusUpdateLoop starts the status update loop
+// StartStatusUpdateLoop starts the status update loop with new architecture
 func (m *Manager) StartStatusUpdateLoop(ctx context.Context, interval time.Duration, isUpdating func() bool, isSelfHealing func() bool) error {
 	if m.running {
 		return fmt.Errorf("status update loop is already running")
@@ -80,7 +104,7 @@ func (m *Manager) StartStatusUpdateLoop(ctx context.Context, interval time.Durat
 	return nil
 }
 
-// statusUpdateLoop runs the status update loop
+// statusUpdateLoop runs the new status update loop according to requirements
 func (m *Manager) statusUpdateLoop(ctx context.Context, interval time.Duration, isUpdating func() bool, isSelfHealing func() bool) {
 	m.logger.Infof("Starting status update loop with interval: %v", interval)
 	ticker := time.NewTicker(interval)
@@ -108,115 +132,297 @@ func (m *Manager) statusUpdateLoop(ctx context.Context, interval time.Duration, 
 				continue
 			}
 
-			if err := m.SendStatusUpdate("update_check"); err != nil {
-				m.logger.Errorf("Status update failed: %v", err)
+			if err := m.performStatusUpdateCycle(); err != nil {
+				m.logger.Errorf("Status update cycle failed: %v", err)
 			}
 		}
 	}
 }
 
-// SendStatusUpdate sends a status update with the specified type
-// Flow: check current status -> send API -> update desired status if change -> sync by comparing current and desired status -> run command if present
-func (m *Manager) SendStatusUpdate(updateType string) error {
-	// Step 1: Check current status - detect current state to update the currentState in memory
-	m.detectCurrentState()
+// performStatusUpdateCycle performs the complete status update cycle according to new requirements
+func (m *Manager) performStatusUpdateCycle() error {
+	m.logger.Info("Starting status update cycle")
 
-	// Step 2: Build status update payload using the detected current state
-	payload, clonedState, err := m.buildStatusUpdatePayload(updateType)
-	if err != nil {
-		return fmt.Errorf("failed to build status update payload: %w", err)
+	// Step 1: Get actual state (run the managers one by one)
+	m.logger.Info("Step 1: Detecting current actual state")
+	if err := m.detectCurrentState(); err != nil {
+		return fmt.Errorf("failed to detect current state: %w", err)
 	}
 
-	// Step 3: Send API - send the status update to the server
-	sendResult := m.StatusUpdateSender.SendStatusUpdateWithResult(payload)
-	if sendResult.Error != nil {
-		return fmt.Errorf("failed to send status update: %w", sendResult.Error)
+	// Step 2: Send API with current state
+	m.logger.Info("Step 2: Sending status update with current state")
+	apiResponse, apiError := m.sendStatusUpdateAPI()
+
+	// Step 3: Process API response - update desired state if new_state received
+	var hasCommand bool
+	var command interface{}
+
+	if apiError == nil && apiResponse != nil {
+		m.logger.Info("Step 3: Processing API response")
+		newState, cmd, err := m.processAPIResponse(apiResponse)
+		if err != nil {
+			m.logger.Errorf("Failed to process API response: %v", err)
+		} else {
+			if newState != nil {
+				m.logger.Info("Received new desired state from API")
+				// Update desired state and save to config
+				m.agent.SetDesiredState(newState)
+				if err := m.configManager.UpdateStateConfig(newState); err != nil {
+					m.logger.Errorf("Failed to save new state to config: %v", err)
+				} else {
+					m.logger.Info("New desired state saved to config successfully")
+				}
+			}
+			if cmd != nil {
+				hasCommand = true
+				command = cmd
+				m.logger.Infof("Received command from API: %v", cmd)
+			}
+		}
 	}
 
-	// Step 4: Process response which handles:
-	// - Update desired status if change (via response handler)
-	// - Sync by comparing current and desired status (via response handler)
-	// - Run command if present (via response handler)
-	selfHealResult := m.StatusUpdateSender.PerformSelfHeal(sendResult, m.responseHandler)
-	if selfHealResult.Error != nil {
-		return fmt.Errorf("self-healing failed: %w", selfHealResult.Error)
+	// Step 4: Execute command if present (before state consolidation)
+	if hasCommand {
+		m.logger.Info("Step 4: Executing command")
+		if err := m.agent.ExecuteCommand(command); err != nil {
+			m.logger.Errorf("Command execution failed: %v", err)
+		} else {
+			m.logger.Info("Command executed successfully")
+		}
 	}
 
-	// Return the cloned state for the caller to use if needed
-	// This allows the agent to update its currentSystemState
-	_ = clonedState // For now, we'll let the agent handle this
+	// Step 5: Individual manager state comparison and consolidation
+	m.logger.Info("Step 5: Performing state consolidation")
+	consolidationErrors := m.performStateConsolidation()
 
+	// Step 6: Collect all errors and send feedback to backend
+	m.logger.Info("Step 6: Collecting results and sending feedback")
+	if err := m.sendConsolidationFeedback(apiError, consolidationErrors); err != nil {
+		m.logger.Errorf("Failed to send consolidation feedback: %v", err)
+	}
+
+	m.logger.Info("Status update cycle completed")
 	return nil
 }
 
-// detectCurrentState detects the current state and updates the currentState in memory
-func (m *Manager) detectCurrentState() {
+// detectCurrentState detects the current actual state by running managers one by one
+func (m *Manager) detectCurrentState() error {
+	desiredState := m.agent.GetDesiredState()
+	if desiredState == nil {
+		return fmt.Errorf("desired state is nil")
+	}
+
 	m.currentState = DetectCurrentState(
-		m.desiredState,
+		desiredState,
 		m.containerManager,
 		m.systemPackageManager,
 		m.customPackageManager,
 		m.environmentManager,
 	)
-}
 
-// buildStatusUpdatePayload builds a status update payload using the current state
-func (m *Manager) buildStatusUpdatePayload(updateType string) (*types.StatusUpdatePayload, *types.StateConfig, error) {
-	if m.currentState == nil {
-		return nil, nil, fmt.Errorf("current state not detected")
-	}
-
-	// Use the payload builder to build the payload
-	return m.payloadBuilder.BuildStatusUpdatePayload(updateType, m.currentState)
-}
-
-// StartAgentUpdateLoop starts the agent update check loop
-func (m *Manager) StartAgentUpdateLoop(ctx context.Context, interval time.Duration, isUpdating func() bool) error {
-	m.logger.Infof("Agent update loop started with interval: %v", interval)
-
-	go m.agentUpdateLoop(ctx, interval, isUpdating)
+	m.logger.Info("Current state detected successfully")
 	return nil
 }
 
-// agentUpdateLoop runs the agent update check loop
-func (m *Manager) agentUpdateLoop(ctx context.Context, interval time.Duration, isUpdating func() bool) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			m.logger.Info("Agent update loop stopped due to context cancellation")
-			return
-		case <-ticker.C:
-			// Only check for agent updates if not already updating
-			if !isUpdating() {
-				if err := m.CheckForAgentUpdate(); err != nil {
-					m.logger.Errorf("Agent update check failed: %v", err)
-				}
-			} else {
-				m.logger.Info("Skipping agent update check - already updating")
-			}
-		}
+// sendStatusUpdateAPI sends the status update API call with current state
+func (m *Manager) sendStatusUpdateAPI() (*types.HTTPResponse, error) {
+	if m.currentState == nil {
+		return nil, fmt.Errorf("current state not detected")
 	}
+
+	// Build status update payload
+	payload, _, err := m.payloadBuilder.BuildStatusUpdatePayload("update_check", m.currentState)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build status update payload: %w", err)
+	}
+
+	// Send the status update
+	sendResult := m.StatusUpdateSender.SendStatusUpdateWithResult(payload)
+	if sendResult.Error != nil {
+		m.logger.Errorf("API call failed: %v", sendResult.Error)
+		return nil, sendResult.Error
+	}
+
+	m.logger.Info("API call succeeded")
+	return sendResult.Response, nil
 }
 
-// CheckForAgentUpdate checks if the agent binary itself needs updating
-func (m *Manager) CheckForAgentUpdate() error {
-	// This method can be called to check if the agent needs to update itself
-	// For now, we'll implement a simple check that can be extended
-	// In a real implementation, this would check for new agent versions
+// processAPIResponse processes the API response and extracts new_state and cmd
+func (m *Manager) processAPIResponse(response *types.HTTPResponse) (*types.StateConfig, interface{}, error) {
+	if len(response.Body) == 0 {
+		return nil, nil, nil
+	}
 
-	m.logger.Info("Checking for agent self-update...")
+	var apiResponse map[string]interface{}
+	if err := json.Unmarshal(response.Body, &apiResponse); err != nil {
+		return nil, nil, fmt.Errorf("failed to parse API response: %w", err)
+	}
 
-	// TODO: Implement actual agent update logic here
-	// This could involve:
-	// 1. Checking for new agent versions from the API
-	// 2. Downloading new agent binary
-	// 3. Replacing current binary
-	// 4. Restarting the agent service
+	// Extract new_state
+	var newState *types.StateConfig
+	if newStateData, exists := apiResponse["new_state"]; exists && newStateData != nil {
+		newStateJSON, err := json.Marshal(newStateData)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to marshal new state: %w", err)
+		}
 
-	m.logger.Info("Agent self-update check completed")
+		var state types.StateConfig
+		if err := json.Unmarshal(newStateJSON, &state); err != nil {
+			return nil, nil, fmt.Errorf("failed to unmarshal new state: %w", err)
+		}
+
+		// Check if the new state is empty (backend returned {} meaning no change)
+		if !m.configManager.IsStateConfigEmpty(&state) {
+			newState = &state
+		}
+	}
+
+	// Extract cmd
+	var cmd interface{}
+	if cmdData, exists := apiResponse["cmd"]; exists && cmdData != nil {
+		if cmdStr, ok := cmdData.(string); ok && cmdStr != "" {
+			cmd = cmdStr
+		}
+	}
+
+	return newState, cmd, nil
+}
+
+// performStateConsolidation performs individual manager state comparison and consolidation
+func (m *Manager) performStateConsolidation() map[string]error {
+	errors := make(map[string]error)
+	desiredState := m.agent.GetDesiredState()
+
+	if desiredState == nil {
+		errors["general"] = fmt.Errorf("desired state is nil")
+		return errors
+	}
+
+	// Container state consolidation
+	if m.containerManager != nil {
+		m.logger.Info("Performing container state consolidation")
+		if err := m.consolidateContainerState(desiredState); err != nil {
+			errors["containers"] = err
+			m.logger.Errorf("Container state consolidation failed: %v", err)
+		} else {
+			m.logger.Info("Container state consolidation completed successfully")
+		}
+	}
+
+	// System package state consolidation
+	if m.systemPackageManager != nil {
+		m.logger.Info("Performing system package state consolidation")
+		if err := m.consolidateSystemPackageState(desiredState); err != nil {
+			errors["system_packages"] = err
+			m.logger.Errorf("System package state consolidation failed: %v", err)
+		} else {
+			m.logger.Info("System package state consolidation completed successfully")
+		}
+	}
+
+	// Custom package state consolidation
+	if m.customPackageManager != nil {
+		m.logger.Info("Performing custom package state consolidation")
+		if err := m.consolidateCustomPackageState(desiredState); err != nil {
+			errors["custom_packages"] = err
+			m.logger.Errorf("Custom package state consolidation failed: %v", err)
+		} else {
+			m.logger.Info("Custom package state consolidation completed successfully")
+		}
+	}
+
+	// Environment state consolidation
+	if m.environmentManager != nil {
+		m.logger.Info("Performing environment state consolidation")
+		if err := m.consolidateEnvironmentState(desiredState); err != nil {
+			errors["environment"] = err
+			m.logger.Errorf("Environment state consolidation failed: %v", err)
+		} else {
+			m.logger.Info("Environment state consolidation completed successfully")
+		}
+	}
+
+	return errors
+}
+
+// consolidateContainerState performs container state consolidation
+func (m *Manager) consolidateContainerState(desiredState *types.StateConfig) error {
+	currentContainers := m.currentState.Containers
+	desiredContainers := desiredState.Containers
+
+	// Use container manager's sync method
+	_, err := m.containerManager.SyncContainers(desiredContainers, currentContainers)
+	return err
+}
+
+// consolidateSystemPackageState performs system package state consolidation
+func (m *Manager) consolidateSystemPackageState(desiredState *types.StateConfig) error {
+	currentPackages := m.currentState.Packages
+	desiredPackages := desiredState.Packages
+
+	// Use system package manager's state consolidation
+	_, err := m.systemPackageManager.StateConsolidation(currentPackages, desiredPackages)
+	return err
+}
+
+// consolidateCustomPackageState performs custom package state consolidation
+func (m *Manager) consolidateCustomPackageState(desiredState *types.StateConfig) error {
+	currentCustomPackages := m.currentState.CustomPackages
+	desiredCustomPackages := desiredState.CustomPackages
+
+	// Use custom package manager's state consolidation
+	_, err := m.customPackageManager.StateConsolidation(currentCustomPackages, desiredCustomPackages)
+	return err
+}
+
+// consolidateEnvironmentState performs environment state consolidation
+func (m *Manager) consolidateEnvironmentState(desiredState *types.StateConfig) error {
+	desiredEnv := desiredState.Env
+
+	// Use environment manager's sync method
+	return m.environmentManager.SyncSystemEnvironment(desiredEnv)
+}
+
+// sendConsolidationFeedback sends feedback about the consolidation results to backend
+func (m *Manager) sendConsolidationFeedback(apiError error, consolidationErrors map[string]error) error {
+	// Determine overall success
+	success := apiError == nil && len(consolidationErrors) == 0
+
+	// Create feedback payload
+	feedback := map[string]interface{}{
+		"success":     success,
+		"api_success": apiError == nil,
+		"errors":      make(map[string]string),
+	}
+
+	// Add API error if present
+	if apiError != nil {
+		feedback["errors"].(map[string]string)["api"] = apiError.Error()
+	}
+
+	// Add consolidation errors
+	for component, err := range consolidationErrors {
+		feedback["errors"].(map[string]string)[component] = err.Error()
+	}
+
+	// Build feedback payload
+	feedbackPayload := &types.StatusUpdatePayload{
+		UpdateType:   "consolidation_feedback",
+		CurrentState: *m.currentState,
+	}
+
+	// Send feedback
+	sendResult := m.StatusUpdateSender.SendStatusUpdateWithResult(feedbackPayload)
+	if sendResult.Error != nil {
+		return fmt.Errorf("failed to send consolidation feedback: %w", sendResult.Error)
+	}
+
+	if success {
+		m.logger.Info("Consolidation feedback sent successfully - all operations succeeded")
+	} else {
+		m.logger.Infof("Consolidation feedback sent successfully - some operations failed")
+	}
+
 	return nil
 }
 
@@ -226,260 +432,4 @@ func (m *Manager) Stop() {
 		close(m.stopChan)
 		m.running = false
 	}
-}
-
-// SendSystemHealingFeedback sends feedback about system healing results to the server
-func (m *Manager) SendSystemHealingFeedback(result *SelfHealingResult) {
-	if result == nil {
-		return
-	}
-
-	// Determine status based on result
-	var status string
-
-	if result.Success {
-		status = "update_completed"
-	} else {
-		status = "update_failed"
-	}
-
-	// Log self-healing errors if any
-	if !result.Success {
-		m.logger.Errorf("Self-healing errors: %v", result.Errors)
-	}
-
-	// Send the feedback via status update
-	if err := m.SendStatusUpdate(status); err != nil {
-		m.logger.Errorf("Failed to send system healing feedback: %v", err)
-	} else {
-		m.logger.Infof("System healing feedback sent successfully: %s", status)
-	}
-}
-
-// VerifyAndCorrectSystemStateWithFeedback verifies system state and sends feedback
-func (m *Manager) VerifyAndCorrectSystemStateWithFeedback(state *types.StateConfig, triggeredBy string) (*SelfHealingResult, error) {
-	// Initialize self-healing result tracking
-	result := &SelfHealingResult{
-		Success:     true,
-		Errors:      make(map[string]string),
-		TriggeredBy: triggeredBy,
-	}
-
-	m.logger.Info("Verifying system state against configuration...")
-
-	// Verify containers
-	if err := m.verifyContainers(state); err != nil {
-		m.logger.Errorf("Container verification failed: %v", err)
-		result.Success = false
-		result.Errors[string(TaskContainers)] = err.Error()
-		// Continue with other verifications
-	}
-
-	// Verify packages
-	if err := m.verifyPackages(state); err != nil {
-		m.logger.Errorf("Package verification failed: %v", err)
-		result.Success = false
-		result.Errors[string(TaskPackages)] = err.Error()
-		// Continue with other verifications
-	}
-
-	// Verify custom packages
-	if err := m.verifyCustomPackages(state); err != nil {
-		m.logger.Errorf("Custom package verification failed: %v", err)
-		result.Success = false
-		result.Errors[string(TaskCustomPackages)] = err.Error()
-		// Continue with other verifications
-	}
-
-	// Verify environment variables
-	if err := m.verifyEnvironmentVariables(state); err != nil {
-		m.logger.Errorf("Environment variable verification failed: %v", err)
-		result.Success = false
-		result.Errors[string(TaskEnvironment)] = err.Error()
-		// Continue with other verifications
-	}
-
-	// Send feedback
-	m.SendSystemHealingFeedback(result)
-
-	return result, nil
-}
-
-// verifyContainers checks if containers in the state are actually running
-func (m *Manager) verifyContainers(state *types.StateConfig) error {
-	if m.containerManager == nil {
-		m.logger.Info("Container manager not available, skipping container verification")
-		return nil
-	}
-
-	if len(state.Containers) == 0 {
-		m.logger.Info("No containers configured, skipping container verification")
-		return nil
-	}
-
-	// Check for drift first without logging synchronization messages
-	hasDrift, driftedContainers := m.containerManager.CheckContainerDrift(state.Containers)
-
-	if !hasDrift {
-		m.logger.Info("All containers are in desired state, no corrections needed")
-		return nil
-	}
-
-	m.logger.Infof("Container drift detected for %d containers, applying corrections...", len(driftedContainers))
-
-	// Apply corrections only for drifted containers
-	for _, containerConfig := range driftedContainers {
-		containerName := containerConfig.Name
-
-		// Check if container is running
-		if !m.containerManager.IsContainerRunning(containerName) {
-			m.logger.Infof("Container %s is not running, attempting to start it...", containerName)
-
-			// Try to start the container
-			if err := m.containerManager.EnsureContainersRunning([]types.ContainerConfig{containerConfig}); err != nil {
-				m.logger.Errorf("Failed to start container %s: %v", containerName, err)
-				continue
-			}
-
-			m.logger.Infof("Container %s started successfully", containerName)
-		} else {
-			m.logger.Infof("Container %s health check failed, may need restart", containerName)
-			// Could restart the container here if needed
-		}
-	}
-
-	return nil
-}
-
-// verifyPackages checks which packages from desired state are actually installed
-func (m *Manager) verifyPackages(state *types.StateConfig) error {
-	if m.systemPackageManager == nil && m.customPackageManager == nil {
-		m.logger.Info("No package managers available, skipping package verification")
-		return nil
-	}
-
-	// Use the provided state parameter, or fall back to device desired state if none provided
-	targetState := state
-	if targetState == nil {
-		targetState = m.desiredState
-		if targetState == nil {
-			m.logger.Info("No state available for package verification, skipping")
-			return nil
-		}
-	}
-
-	if len(targetState.Packages) == 0 && len(targetState.CustomPackages) == 0 {
-		m.logger.Info("No packages configured in target state, skipping package verification")
-		return nil
-	}
-
-	// Check which system packages are currently installed
-	if len(targetState.Packages) > 0 && m.systemPackageManager != nil {
-		// Use DetectCurrentState to get currently installed packages
-		currentPackages := m.systemPackageManager.DetectCurrentState(targetState)
-
-		if len(currentPackages) == len(targetState.Packages) {
-			m.logger.Info("All desired system packages are currently installed")
-			// Update current state with all desired packages
-			state.Packages = targetState.Packages
-		} else {
-			var missingNames []string
-			currentPackageMap := make(map[string]bool)
-			for _, pkg := range currentPackages {
-				currentPackageMap[pkg] = true
-			}
-			for _, pkg := range targetState.Packages {
-				if !currentPackageMap[pkg] {
-					missingNames = append(missingNames, pkg)
-				}
-			}
-			m.logger.Infof("Some desired system packages are not installed: %v", missingNames)
-			// Update current state with only the packages that are actually installed
-			state.Packages = currentPackages
-			m.logger.Infof("Updated current state with %d installed packages out of %d desired",
-				len(currentPackages), len(targetState.Packages))
-		}
-	}
-
-	return nil
-}
-
-// verifyCustomPackages checks which custom packages from desired state are actually installed
-func (m *Manager) verifyCustomPackages(state *types.StateConfig) error {
-	if m.customPackageManager == nil {
-		m.logger.Info("Custom package manager not available, skipping custom package verification")
-		return nil
-	}
-
-	if len(state.CustomPackages) == 0 {
-		m.logger.Info("No custom packages configured, skipping custom package verification")
-		return nil
-	}
-
-	// Use DetectCurrentState to get currently installed custom packages
-	currentCustomPackagesMap := m.customPackageManager.DetectCurrentState(state)
-
-	if len(currentCustomPackagesMap) == len(state.CustomPackages) {
-		m.logger.Info("All desired custom packages are currently installed")
-		// Update current state with all desired custom packages
-		state.CustomPackages = currentCustomPackagesMap
-	} else {
-		var missingNames []string
-		for name := range state.CustomPackages {
-			if _, exists := currentCustomPackagesMap[name]; !exists {
-				missingNames = append(missingNames, name)
-			}
-		}
-		m.logger.Infof("Some desired custom packages are not installed: %v", missingNames)
-		// Update current state with only the custom packages that are actually installed
-		state.CustomPackages = currentCustomPackagesMap
-		m.logger.Infof("Updated current state with %d installed custom packages out of %d desired",
-			len(currentCustomPackagesMap), len(state.CustomPackages))
-	}
-
-	return nil
-}
-
-// verifyEnvironmentVariables checks if environment variables in the state are actually set
-func (m *Manager) verifyEnvironmentVariables(state *types.StateConfig) error {
-	if m.environmentManager == nil {
-		m.logger.Info("Environment manager not available, skipping environment variable verification")
-		return nil
-	}
-
-	if len(state.Env) == 0 {
-		m.logger.Info("No environment variables configured, skipping environment variable verification")
-		return nil
-	}
-
-	m.logger.Info("Verifying environment variable state...")
-
-	// Get current system environment
-	currentEnv, err := m.environmentManager.GetCurrentSystemEnvironment()
-	if err != nil {
-		return fmt.Errorf("failed to get current system environment: %w", err)
-	}
-
-	// Check if environment variables match
-	needsUpdate := false
-	for key, expectedValue := range state.Env {
-		if currentValue, exists := currentEnv[key]; !exists || currentValue != expectedValue {
-			m.logger.Infof("Environment variable %s mismatch (expected: %s, current: %s)",
-				key, expectedValue, currentValue)
-			needsUpdate = true
-		}
-	}
-
-	// If there are mismatches, sync the environment
-	if needsUpdate {
-		m.logger.Info("Environment variables need updating, syncing...")
-		if err := m.environmentManager.SyncSystemEnvironment(state.Env); err != nil {
-			return fmt.Errorf("failed to sync environment variables: %w", err)
-		}
-		m.logger.Info("Environment variables synced successfully")
-	} else {
-		m.logger.Info("Environment variables are correctly set")
-	}
-
-	return nil
 }

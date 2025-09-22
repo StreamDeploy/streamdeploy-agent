@@ -36,7 +36,7 @@ func DetectCurrentState(
 
 	// Detect Docker containers using container manager's DetectCurrentState
 	// For containers, we track ALL containers, not just those in desired state
-	if containerManager != nil {
+	if containerManager != nil && len(desiredState.Containers) > 0 {
 		if detectorManager, ok := containerManager.(interface {
 			DetectCurrentState(*types.StateConfig) []types.ContainerConfig
 		}); ok {

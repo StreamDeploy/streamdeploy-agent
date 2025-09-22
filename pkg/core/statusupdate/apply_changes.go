@@ -40,33 +40,6 @@ const (
 	TaskEnvironment    SelfHealingTask = "env"
 )
 
-// AgentInterface defines the interface that the agent must implement for status update response handling
-type AgentInterface interface {
-	// Logger access
-	GetLogger() types.Logger
-
-	// Config management
-	GetConfigManager() types.ConfigManager
-	GetDesiredState() *types.StateConfig
-	SetDesiredState(state *types.StateConfig)
-	GetCurrentSystemState() *types.StateConfig
-	SetCurrentSystemState(state *types.StateConfig)
-
-	// Manager access
-	GetContainerManager() types.ContainerManager
-	GetSystemPackageManager() types.SystemPackageManager
-	GetCustomPackageManager() types.CustomPackageManager
-	GetEnvironmentManager() types.EnvironmentManager
-
-	// System operations
-	ExecuteCommand(cmd interface{}) error
-	SyncSystemToDesiredState(triggeredBy string) (bool, error)
-	VerifyAndCorrectSystemState(desiredState *types.StateConfig) error
-
-	// Utility functions
-	CloneStateConfig(state *types.StateConfig) *types.StateConfig
-}
-
 // DefaultResponseHandler implements the StatusUpdateResponseHandler interface
 type DefaultResponseHandler struct {
 	agent AgentInterface
@@ -384,21 +357,10 @@ func (h *DefaultResponseHandler) SyncSystemToDesiredState(triggeredBy string) (*
 		}, nil
 	}
 
-	// Apply changes using the verification and correction logic
-	// We need to get the status update manager to call VerifyAndCorrectSystemStateWithFeedback
-	// For now, we'll call the agent's method directly
-	result, err := h.agent.SyncSystemToDesiredState(triggeredBy)
-	if err != nil {
-		return &SelfHealingResult{
-			Success:     false,
-			Errors:      map[string]string{"sync": err.Error()},
-			TriggeredBy: triggeredBy,
-		}, err
-	}
-
-	// Create a result object
+	// In the new architecture, the statusupdate manager handles state consolidation
+	// This method is now a placeholder since the real work is done in the manager
 	healingResult := &SelfHealingResult{
-		Success:     result,
+		Success:     true,
 		Errors:      make(map[string]string),
 		TriggeredBy: triggeredBy,
 	}

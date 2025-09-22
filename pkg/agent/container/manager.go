@@ -67,8 +67,9 @@ func (m *Manager) DetectCurrentState(desiredState *types.StateConfig) []types.Co
 	return currentContainers
 }
 
-// CompareStates compares current state with desired state and returns what needs to be destroyed, created, or updated
-func (m *Manager) CompareStates(currentState, desiredState []types.ContainerConfig) ([]types.ContainerConfig, []types.ContainerConfig, []types.ContainerConfig) {
+// CompareStates compares current state with desired state and returns what needs to be destroyed and created
+// For containers, there's no update - if state is different, destroy old and create new
+func (m *Manager) CompareStates(currentState, desiredState []types.ContainerConfig) ([]types.ContainerConfig, []types.ContainerConfig) {
 	// Create maps for easier lookup
 	currentMap := make(map[string]types.ContainerConfig)
 	desiredMap := make(map[string]types.ContainerConfig)
@@ -81,7 +82,7 @@ func (m *Manager) CompareStates(currentState, desiredState []types.ContainerConf
 		desiredMap[config.Name] = config
 	}
 
-	var toDestroy, toCreate, toUpdate []types.ContainerConfig
+	var toDestroy, toCreate []types.ContainerConfig
 
 	// Find containers to destroy (in current but not in desired)
 	for name, currentConfig := range currentMap {
@@ -90,12 +91,14 @@ func (m *Manager) CompareStates(currentState, desiredState []types.ContainerConf
 		}
 	}
 
-	// Find containers to create or update (in desired)
+	// Find containers to create or recreate (in desired)
 	for name, desiredConfig := range desiredMap {
 		if currentConfig, exists := currentMap[name]; exists {
-			// Container exists, check if it needs updating
+			// Container exists, check if it needs recreating
 			if !m.configsEqual(currentConfig, desiredConfig) {
-				toUpdate = append(toUpdate, desiredConfig)
+				// State is different - destroy old and create new
+				toDestroy = append(toDestroy, currentConfig)
+				toCreate = append(toCreate, desiredConfig)
 			}
 		} else {
 			// Container doesn't exist, needs to be created
@@ -103,7 +106,7 @@ func (m *Manager) CompareStates(currentState, desiredState []types.ContainerConf
 		}
 	}
 
-	return toDestroy, toCreate, toUpdate
+	return toDestroy, toCreate
 }
 
 // Destroy removes containers that are no longer needed
@@ -417,6 +420,81 @@ func (m *Manager) CheckContainerDrift(configs []types.ContainerConfig) (bool, []
 	}
 
 	return len(driftedContainers) > 0, driftedContainers
+}
+
+// StateConsolidation performs a complete state consolidation process:
+// 1. Calls CompareStates to determine what needs to be done
+// 2. Applies Destroy and Create operations (no update for containers)
+// 3. Reports errors if failed
+// 4. Returns the updated current state based on what succeeded
+func (m *Manager) StateConsolidation(currentState, desiredState []types.ContainerConfig) ([]types.ContainerConfig, error) {
+	m.logger.Info("Starting state consolidation for containers")
+	m.logger.Infof("Current state: %d containers, Desired state: %d containers", len(currentState), len(desiredState))
+
+	// Step 1: Compare states to determine what needs to be done
+	toDestroy, toCreate := m.CompareStates(currentState, desiredState)
+	m.logger.Infof("State comparison: %d to destroy, %d to create", len(toDestroy), len(toCreate))
+
+	// Step 2: Apply changes if needed
+	if len(toDestroy) > 0 || len(toCreate) > 0 {
+		m.logger.Info("Applying container changes")
+
+		// Apply changes in the correct order: destroy first, then create
+		if len(toDestroy) > 0 {
+			if err := m.Destroy(toDestroy); err != nil {
+				m.logger.Errorf("Failed to destroy containers: %v", err)
+				// Return updated current state even if changes failed
+				updatedState := m.updateCurrentStateAfterChanges(currentState, toDestroy, toCreate)
+				return updatedState, err
+			}
+		}
+
+		if len(toCreate) > 0 {
+			if err := m.Create(toCreate); err != nil {
+				m.logger.Errorf("Failed to create containers: %v", err)
+				// Return updated current state even if changes failed
+				updatedState := m.updateCurrentStateAfterChanges(currentState, toDestroy, toCreate)
+				return updatedState, err
+			}
+		}
+
+		m.logger.Info("Container changes applied successfully")
+	} else {
+		m.logger.Info("No container changes needed")
+	}
+
+	// Step 3: Return updated current state based on what succeeded
+	updatedCurrentState := m.updateCurrentStateAfterChanges(currentState, toDestroy, toCreate)
+	m.logger.Infof("State consolidation completed. Final state: %d containers", len(updatedCurrentState))
+
+	return updatedCurrentState, nil
+}
+
+// updateCurrentStateAfterChanges updates the current state based on successful operations
+func (m *Manager) updateCurrentStateAfterChanges(currentState, destroyed, created []types.ContainerConfig) []types.ContainerConfig {
+	// Create a map of current containers by name
+	currentMap := make(map[string]types.ContainerConfig)
+	for _, container := range currentState {
+		currentMap[container.Name] = container
+	}
+
+	// Remove destroyed containers
+	for _, container := range destroyed {
+		delete(currentMap, container.Name)
+	}
+
+	// Add created containers
+	for _, container := range created {
+		currentMap[container.Name] = container
+	}
+
+	// Convert back to slice
+	var result []types.ContainerConfig
+	for _, container := range currentMap {
+		result = append(result, container)
+	}
+
+	return result
 }
 
 // GetCurrentContainerState returns the current container state merged with desired state

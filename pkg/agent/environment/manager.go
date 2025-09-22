@@ -48,31 +48,26 @@ func (m *Manager) DetectCurrentState(desiredState *types.StateConfig) map[string
 	return currentEnv
 }
 
-// CompareStates compares current state with desired state and returns what needs to be destroyed, created, or updated
-func (m *Manager) CompareStates(currentState, desiredState map[string]string) (map[string]string, map[string]string, map[string]string) {
-	var toDestroy, toCreate, toUpdate map[string]string
+// CompareStates compares current state with desired state and returns what needs to be destroyed and created
+// For environment variables, we only track what's in desired state (like package managers)
+func (m *Manager) CompareStates(currentState, desiredState map[string]string) (map[string]string, map[string]string) {
+	var toDestroy, toCreate map[string]string
 
 	// Find variables to destroy (in current but not in desired)
 	for key, currentValue := range currentState {
-		if desiredValue, exists := desiredState[key]; !exists {
+		if _, exists := desiredState[key]; !exists {
 			// Variable exists in current but not in desired - needs to be destroyed
 			if toDestroy == nil {
 				toDestroy = make(map[string]string)
 			}
 			toDestroy[key] = currentValue
-		} else if currentValue != desiredValue {
-			// Variable exists in both but values differ - needs to be updated
-			if toUpdate == nil {
-				toUpdate = make(map[string]string)
-			}
-			toUpdate[key] = desiredValue
 		}
 	}
 
-	// Find variables to create (in desired but not in current)
+	// Find variables to create or update (in desired)
 	for key, desiredValue := range desiredState {
-		if _, exists := currentState[key]; !exists {
-			// Variable exists in desired but not in current - needs to be created
+		if currentValue, exists := currentState[key]; !exists || currentValue != desiredValue {
+			// Variable doesn't exist or has different value - needs to be created/updated
 			if toCreate == nil {
 				toCreate = make(map[string]string)
 			}
@@ -80,7 +75,7 @@ func (m *Manager) CompareStates(currentState, desiredState map[string]string) (m
 		}
 	}
 
-	return toDestroy, toCreate, toUpdate
+	return toDestroy, toCreate
 }
 
 // Destroy removes environment variables that are no longer needed
@@ -241,6 +236,75 @@ func (m *Manager) GetCurrentSystemEnvironment() (map[string]string, error) {
 	}
 
 	return envVars, nil
+}
+
+// StateConsolidation performs a complete state consolidation process:
+// 1. Calls CompareStates to determine what needs to be done
+// 2. Applies Destroy and Create operations
+// 3. Reports errors if failed
+// 4. Returns the updated current state based on what succeeded
+func (m *Manager) StateConsolidation(currentState, desiredState map[string]string) (map[string]string, error) {
+	m.logger.Info("Starting state consolidation for environment variables")
+	m.logger.Infof("Current state: %d variables, Desired state: %d variables", len(currentState), len(desiredState))
+
+	// Step 1: Compare states to determine what needs to be done
+	toDestroy, toCreate := m.CompareStates(currentState, desiredState)
+	m.logger.Infof("State comparison: %d to destroy, %d to create", len(toDestroy), len(toCreate))
+
+	// Step 2: Apply changes if needed
+	if len(toDestroy) > 0 || len(toCreate) > 0 {
+		m.logger.Info("Applying environment variable changes")
+
+		// Apply changes in the correct order: destroy first, then create
+		if len(toDestroy) > 0 {
+			if err := m.Destroy(toDestroy); err != nil {
+				m.logger.Errorf("Failed to destroy environment variables: %v", err)
+				// Return updated current state even if changes failed
+				updatedState := m.updateCurrentStateAfterChanges(currentState, toDestroy, toCreate)
+				return updatedState, err
+			}
+		}
+
+		if len(toCreate) > 0 {
+			if err := m.Create(toCreate); err != nil {
+				m.logger.Errorf("Failed to create environment variables: %v", err)
+				// Return updated current state even if changes failed
+				updatedState := m.updateCurrentStateAfterChanges(currentState, toDestroy, toCreate)
+				return updatedState, err
+			}
+		}
+
+		m.logger.Info("Environment variable changes applied successfully")
+	} else {
+		m.logger.Info("No environment variable changes needed")
+	}
+
+	// Step 3: Return updated current state based on what succeeded
+	updatedCurrentState := m.updateCurrentStateAfterChanges(currentState, toDestroy, toCreate)
+	m.logger.Infof("State consolidation completed. Final state: %d variables", len(updatedCurrentState))
+
+	return updatedCurrentState, nil
+}
+
+// updateCurrentStateAfterChanges updates the current state based on successful operations
+func (m *Manager) updateCurrentStateAfterChanges(currentState, destroyed, created map[string]string) map[string]string {
+	// Create a copy of current state
+	result := make(map[string]string)
+	for key, value := range currentState {
+		result[key] = value
+	}
+
+	// Remove destroyed variables
+	for key := range destroyed {
+		delete(result, key)
+	}
+
+	// Add created variables
+	for key, value := range created {
+		result[key] = value
+	}
+
+	return result
 }
 
 // RemoveSystemEnvironment removes StreamDeploy environment variables from the system
