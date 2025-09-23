@@ -38,35 +38,49 @@ func (fm *FeedbackManager) SendFeedback(
 	apiSuccess bool,
 	consolidationErrors map[string]error,
 	isUpdate bool, // true if this was triggered by an API update, false if it's self-healing
+	currentState *types.StateConfig, // current state to include when needed
 ) error {
 	// Determine the feedback status based on success and operation type
 	var status FeedbackStatus
-	var data interface{}
+	var receiveFeedback interface{}
+	var state interface{}
 
 	if isUpdate {
 		// This was triggered by an API update
 		if apiSuccess && len(consolidationErrors) == 0 {
 			status = UpdateCompleted
-			// No data needed for success
+			// UpdateCompleted needs state
+			if currentState != nil {
+				state = currentState
+			}
 		} else {
 			status = UpdateFailed
-			// Send consolidation errors as data for failures
-			data = fm.buildConsolidationErrorsData(consolidationErrors)
+			// UpdateFailed needs both state and receiveFeedback
+			receiveFeedback = fm.buildConsolidationErrorsData(consolidationErrors)
+			if currentState != nil {
+				state = currentState
+			}
 		}
 	} else {
 		// This is self-healing
 		if len(consolidationErrors) == 0 {
 			status = SelfhealCompleted
-			// No data needed for success
+			// SelfhealCompleted needs state
+			if currentState != nil {
+				state = currentState
+			}
 		} else {
 			status = SelfhealFail
-			// Send consolidation errors as data for failures
-			data = fm.buildConsolidationErrorsData(consolidationErrors)
+			// SelfhealFail needs both state and receiveFeedback
+			receiveFeedback = fm.buildConsolidationErrorsData(consolidationErrors)
+			if currentState != nil {
+				state = currentState
+			}
 		}
 	}
 
 	// Build and send the feedback payload
-	feedbackPayload := fm.payloadBuilder.BuildUpdateFeedbackPayload(string(status), data)
+	feedbackPayload := fm.payloadBuilder.BuildUpdateFeedbackPayload(string(status), receiveFeedback, state)
 
 	// Send feedback using the new feedback endpoint
 	sendResult := fm.sender.SendUpdateFeedbackWithResult(feedbackPayload)

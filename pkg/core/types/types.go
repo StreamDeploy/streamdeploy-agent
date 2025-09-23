@@ -137,8 +137,9 @@ type StatusUpdatePayload struct {
 
 // UpdateFeedbackPayload represents feedback for /v1-device/update-feedback endpoint
 type UpdateFeedbackPayload struct {
-	Status string      `json:"status"`         // update_failed, update_completed, selfheal_fail, selfheal_completed
-	Data   interface{} `json:"data,omitempty"` // optional, contains consolidationErrors for failures
+	Status          string      `json:"status"`                     // update_failed, update_completed, selfheal_fail, selfheal_completed
+	ReceiveFeedback interface{} `json:"receive_feedback,omitempty"` // optional, contains consolidationErrors for failures (renamed from data)
+	State           interface{} `json:"state,omitempty"`            // optional, contains current state for status types that need it
 }
 
 // HTTPResponse represents an HTTP response

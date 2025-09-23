@@ -41,14 +41,19 @@ func (b *PayloadBuilder) BuildStatusUpdatePayload(currentState *types.StateConfi
 }
 
 // BuildUpdateFeedbackPayload builds a feedback payload for /v1-device/update-feedback endpoint
-func (b *PayloadBuilder) BuildUpdateFeedbackPayload(status string, data interface{}) *types.UpdateFeedbackPayload {
+func (b *PayloadBuilder) BuildUpdateFeedbackPayload(status string, receiveFeedback interface{}, state interface{}) *types.UpdateFeedbackPayload {
 	payload := &types.UpdateFeedbackPayload{
 		Status: status,
 	}
 
-	// Only include data if it's not nil
-	if data != nil {
-		payload.Data = data
+	// Only include receiveFeedback if it's not nil
+	if receiveFeedback != nil {
+		payload.ReceiveFeedback = receiveFeedback
+	}
+
+	// Only include state if it's not nil
+	if state != nil {
+		payload.State = state
 	}
 
 	return payload

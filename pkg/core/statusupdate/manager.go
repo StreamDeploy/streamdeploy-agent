@@ -401,8 +401,11 @@ func (m *Manager) sendConsolidationFeedback(apiError error, consolidationResult 
 	// Determine API success (API call succeeded and no API-level errors)
 	apiSuccess := apiError == nil
 
+	// Get current state for feedback
+	currentState := m.agent.GetCurrentSystemState()
+
 	// Send feedback using the feedback manager
-	if err := m.feedbackManager.SendFeedback(apiSuccess, consolidationResult.Errors, isUpdate); err != nil {
+	if err := m.feedbackManager.SendFeedback(apiSuccess, consolidationResult.Errors, isUpdate, currentState); err != nil {
 		return fmt.Errorf("failed to send feedback: %w", err)
 	}
 
