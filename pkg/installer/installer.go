@@ -34,6 +34,13 @@ const (
 	MQTTEndpoint  = "https://mqtt.streamdeploy.com"
 )
 
+// RequiredPackages contains the essential packages that must be installed during agent installation
+var RequiredPackages = []string{
+	"ca-certificates",
+	"systemd",
+	"docker.io",
+}
+
 // DefaultStateConfig contains the default state configuration values
 var DefaultStateConfig = StateConfig{
 	SchemaVersion: "1.0",
@@ -45,6 +52,7 @@ var DefaultStateConfig = StateConfig{
 		LoggingLevel:       "info",
 	},
 	Containers:     []interface{}{},
+	Packages:       RequiredPackages,
 	Env:            make(map[string]string),
 	CustomMetrics:  make(map[string]string),
 	CustomPackages: make(map[string]interface{}),
@@ -168,6 +176,10 @@ func (i *Installer) Run() error {
 		return fmt.Errorf("failed to detect system information: %w", err)
 	}
 
+	if err := i.installRequiredPackages(); err != nil {
+		return fmt.Errorf("failed to install required packages: %w", err)
+	}
+
 	if err := i.ensureAgentBinary(); err != nil {
 		return fmt.Errorf("failed to ensure agent binary: %w", err)
 	}
@@ -287,6 +299,95 @@ func (i *Installer) detectSystem() error {
 	i.logger.Infof("Architecture: %s", i.architecture)
 	i.logger.Infof("Machine Type: %s", i.machineType)
 
+	return nil
+}
+
+func (i *Installer) installRequiredPackages() error {
+	i.logger.Info("Installing required packages...")
+
+	// Check if apt is available (Ubuntu/Debian)
+	if i.commandExists("apt") {
+		return i.installPackagesWithApt()
+	}
+
+	// Check if yum is available (RHEL/CentOS)
+	if i.commandExists("yum") {
+		return i.installPackagesWithYum()
+	}
+
+	// Check if dnf is available (Fedora/newer RHEL)
+	if i.commandExists("dnf") {
+		return i.installPackagesWithDnf()
+	}
+
+	// Check if apk is available (Alpine)
+	if i.commandExists("apk") {
+		return i.installPackagesWithApk()
+	}
+
+	i.logger.Info("No supported package manager found, skipping package installation")
+	return nil
+}
+
+func (i *Installer) installPackagesWithApt() error {
+	i.logger.Info("Installing packages using apt...")
+
+	// Update package list first
+	if err := i.runCommand("apt update"); err != nil {
+		i.logger.Infof("Failed to update package list: %v", err)
+	}
+
+	// Install required packages
+	packages := strings.Join(RequiredPackages, " ")
+	command := fmt.Sprintf("apt install -y %s", packages)
+
+	if err := i.runCommand(command); err != nil {
+		return fmt.Errorf("failed to install required packages: %w", err)
+	}
+
+	i.logger.Info("Required packages installed successfully")
+	return nil
+}
+
+func (i *Installer) installPackagesWithYum() error {
+	i.logger.Info("Installing packages using yum...")
+
+	packages := strings.Join(RequiredPackages, " ")
+	command := fmt.Sprintf("yum install -y %s", packages)
+
+	if err := i.runCommand(command); err != nil {
+		return fmt.Errorf("failed to install required packages: %w", err)
+	}
+
+	i.logger.Info("Required packages installed successfully")
+	return nil
+}
+
+func (i *Installer) installPackagesWithDnf() error {
+	i.logger.Info("Installing packages using dnf...")
+
+	packages := strings.Join(RequiredPackages, " ")
+	command := fmt.Sprintf("dnf install -y %s", packages)
+
+	if err := i.runCommand(command); err != nil {
+		return fmt.Errorf("failed to install required packages: %w", err)
+	}
+
+	i.logger.Info("Required packages installed successfully")
+	return nil
+}
+
+func (i *Installer) installPackagesWithApk() error {
+	i.logger.Info("Installing packages using apk...")
+
+	packages := strings.Join(RequiredPackages, " ")
+	command := fmt.Sprintf("apk add %s", packages)
+
+	if err := i.runCommand(command); err != nil {
+		return fmt.Errorf("failed to install required packages: %w", err)
+	}
+
+	i.logger.Info("Required packages installed successfully")
 	return nil
 }
 

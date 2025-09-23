@@ -318,25 +318,7 @@ func (m *Manager) performStateConsolidation() *ConsolidationResult {
 		return result
 	}
 
-	// Container state consolidation
-	if m.containerManager != nil {
-		m.logger.Info("Performing container state consolidation")
-		currentContainers := m.currentState.Containers
-		desiredContainers := desiredState.Containers
-		if changes, err := m.containerManager.StateConsolidation(currentContainers, desiredContainers); err != nil {
-			result.Errors["containers"] = err
-			m.logger.Errorf("Container state consolidation failed: %v", err)
-		} else {
-			if len(changes) > 0 {
-				result.OperationsPerformed = true
-				m.logger.Infof("Container state consolidation completed successfully with %d changes", len(changes))
-			} else {
-				m.logger.Info("Container state consolidation completed successfully - no changes needed")
-			}
-		}
-	}
-
-	// System package state consolidation
+	// System package state consolidation (before containers)
 	if m.systemPackageManager != nil {
 		m.logger.Info("Performing system package state consolidation")
 		currentPackages := m.currentState.Packages
@@ -354,7 +336,7 @@ func (m *Manager) performStateConsolidation() *ConsolidationResult {
 		}
 	}
 
-	// Custom package state consolidation
+	// Custom package state consolidation (before containers)
 	if m.customPackageManager != nil {
 		m.logger.Info("Performing custom package state consolidation")
 		currentCustomPackages := m.currentState.CustomPackages
@@ -368,6 +350,24 @@ func (m *Manager) performStateConsolidation() *ConsolidationResult {
 				m.logger.Infof("Custom package state consolidation completed successfully with %d changes", len(changes))
 			} else {
 				m.logger.Info("Custom package state consolidation completed successfully - no changes needed")
+			}
+		}
+	}
+
+	// Container state consolidation (after packages)
+	if m.containerManager != nil {
+		m.logger.Info("Performing container state consolidation")
+		currentContainers := m.currentState.Containers
+		desiredContainers := desiredState.Containers
+		if changes, err := m.containerManager.StateConsolidation(currentContainers, desiredContainers); err != nil {
+			result.Errors["containers"] = err
+			m.logger.Errorf("Container state consolidation failed: %v", err)
+		} else {
+			if len(changes) > 0 {
+				result.OperationsPerformed = true
+				m.logger.Infof("Container state consolidation completed successfully with %d changes", len(changes))
+			} else {
+				m.logger.Info("Container state consolidation completed successfully - no changes needed")
 			}
 		}
 	}
