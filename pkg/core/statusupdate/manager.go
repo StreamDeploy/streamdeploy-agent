@@ -47,6 +47,7 @@ type ManagerInterface interface {
 type Manager struct {
 	*StatusUpdateSender
 	payloadBuilder       *PayloadBuilder
+	feedbackManager      *FeedbackManager
 	logger               types.Logger
 	running              bool
 	stopChan             chan struct{}
@@ -74,10 +75,13 @@ func NewManager(
 	agent AgentInterface,
 ) *Manager {
 	baseSender := NewStatusUpdateSender(httpClient, mqttClient, deviceID, mode, logger)
+	payloadBuilder := NewPayloadBuilder(agent.CloneStateConfig)
+	feedbackManager := NewFeedbackManager(payloadBuilder, baseSender, logger)
 
 	return &Manager{
 		StatusUpdateSender:   baseSender.(*StatusUpdateSender),
-		payloadBuilder:       NewPayloadBuilder(agent.CloneStateConfig),
+		payloadBuilder:       payloadBuilder,
+		feedbackManager:      feedbackManager,
 		logger:               logger,
 		stopChan:             make(chan struct{}),
 		running:              false,
@@ -196,11 +200,14 @@ func (m *Manager) performStatusUpdateCycle() error {
 
 	// Step 5: Individual manager state comparison and consolidation
 	m.logger.Debug("Step 5: Performing state consolidation")
-	consolidationErrors := m.performStateConsolidation()
+	consolidationResult := m.performStateConsolidation()
 
 	// Step 6: Collect all errors and send feedback to backend
 	m.logger.Debug("Step 6: Collecting results and sending feedback")
-	if err := m.sendConsolidationFeedback(apiError, consolidationErrors); err != nil {
+	// Determine if this was triggered by an API update (only if API succeeded and provided new state/command)
+	// If API failed, it's considered selfheal
+	isUpdate := (apiError == nil) && (hasCommand || (apiResponse != nil))
+	if err := m.sendConsolidationFeedback(apiError, consolidationResult, isUpdate); err != nil {
 		m.logger.Errorf("Failed to send consolidation feedback: %v", err)
 	}
 
@@ -233,8 +240,8 @@ func (m *Manager) sendStatusUpdateAPI() (*types.HTTPResponse, error) {
 		return nil, fmt.Errorf("current state not detected")
 	}
 
-	// Build status update payload
-	payload, _, err := m.payloadBuilder.BuildStatusUpdatePayload("update_check", m.currentState)
+	// Build status update payload (only current_state field)
+	payload, _, err := m.payloadBuilder.BuildStatusUpdatePayload(m.currentState)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build status update payload: %w", err)
 	}
@@ -291,14 +298,24 @@ func (m *Manager) processAPIResponse(response *types.HTTPResponse) (*types.State
 	return newState, cmd, nil
 }
 
+// ConsolidationResult represents the result of state consolidation
+type ConsolidationResult struct {
+	Errors              map[string]error
+	OperationsPerformed bool
+}
+
 // performStateConsolidation performs individual manager state comparison and consolidation
-func (m *Manager) performStateConsolidation() map[string]error {
-	errors := make(map[string]error)
+func (m *Manager) performStateConsolidation() *ConsolidationResult {
+	result := &ConsolidationResult{
+		Errors:              make(map[string]error),
+		OperationsPerformed: false,
+	}
+
 	desiredState := m.agent.GetDesiredState()
 
 	if desiredState == nil {
-		errors["general"] = fmt.Errorf("desired state is nil")
-		return errors
+		result.Errors["general"] = fmt.Errorf("desired state is nil")
+		return result
 	}
 
 	// Container state consolidation
@@ -306,11 +323,16 @@ func (m *Manager) performStateConsolidation() map[string]error {
 		m.logger.Info("Performing container state consolidation")
 		currentContainers := m.currentState.Containers
 		desiredContainers := desiredState.Containers
-		if _, err := m.containerManager.StateConsolidation(currentContainers, desiredContainers); err != nil {
-			errors["containers"] = err
+		if changes, err := m.containerManager.StateConsolidation(currentContainers, desiredContainers); err != nil {
+			result.Errors["containers"] = err
 			m.logger.Errorf("Container state consolidation failed: %v", err)
 		} else {
-			m.logger.Info("Container state consolidation completed successfully")
+			if len(changes) > 0 {
+				result.OperationsPerformed = true
+				m.logger.Infof("Container state consolidation completed successfully with %d changes", len(changes))
+			} else {
+				m.logger.Info("Container state consolidation completed successfully - no changes needed")
+			}
 		}
 	}
 
@@ -319,11 +341,16 @@ func (m *Manager) performStateConsolidation() map[string]error {
 		m.logger.Info("Performing system package state consolidation")
 		currentPackages := m.currentState.Packages
 		desiredPackages := desiredState.Packages
-		if _, err := m.systemPackageManager.StateConsolidation(currentPackages, desiredPackages); err != nil {
-			errors["system_packages"] = err
+		if changes, err := m.systemPackageManager.StateConsolidation(currentPackages, desiredPackages); err != nil {
+			result.Errors["system_packages"] = err
 			m.logger.Errorf("System package state consolidation failed: %v", err)
 		} else {
-			m.logger.Info("System package state consolidation completed successfully")
+			if len(changes) > 0 {
+				result.OperationsPerformed = true
+				m.logger.Infof("System package state consolidation completed successfully with %d changes", len(changes))
+			} else {
+				m.logger.Info("System package state consolidation completed successfully - no changes needed")
+			}
 		}
 	}
 
@@ -332,11 +359,16 @@ func (m *Manager) performStateConsolidation() map[string]error {
 		m.logger.Info("Performing custom package state consolidation")
 		currentCustomPackages := m.currentState.CustomPackages
 		desiredCustomPackages := desiredState.CustomPackages
-		if _, err := m.customPackageManager.StateConsolidation(currentCustomPackages, desiredCustomPackages); err != nil {
-			errors["custom_packages"] = err
+		if changes, err := m.customPackageManager.StateConsolidation(currentCustomPackages, desiredCustomPackages); err != nil {
+			result.Errors["custom_packages"] = err
 			m.logger.Errorf("Custom package state consolidation failed: %v", err)
 		} else {
-			m.logger.Info("Custom package state consolidation completed successfully")
+			if len(changes) > 0 {
+				result.OperationsPerformed = true
+				m.logger.Infof("Custom package state consolidation completed successfully with %d changes", len(changes))
+			} else {
+				m.logger.Info("Custom package state consolidation completed successfully - no changes needed")
+			}
 		}
 	}
 
@@ -345,54 +377,33 @@ func (m *Manager) performStateConsolidation() map[string]error {
 		m.logger.Info("Performing environment state consolidation")
 		desiredEnv := desiredState.Env
 		if err := m.environmentManager.SyncSystemEnvironment(desiredEnv); err != nil {
-			errors["environment"] = err
+			result.Errors["environment"] = err
 			m.logger.Errorf("Environment state consolidation failed: %v", err)
 		} else {
+			// Environment manager doesn't return changes, so we assume operations were performed if no error
+			result.OperationsPerformed = true
 			m.logger.Info("Environment state consolidation completed successfully")
 		}
 	}
 
-	return errors
+	return result
 }
 
 // sendConsolidationFeedback sends feedback about the consolidation results to backend
-func (m *Manager) sendConsolidationFeedback(apiError error, consolidationErrors map[string]error) error {
-	// Determine overall success
-	success := apiError == nil && len(consolidationErrors) == 0
-
-	// Create feedback payload
-	feedback := map[string]interface{}{
-		"success":     success,
-		"api_success": apiError == nil,
-		"errors":      make(map[string]string),
+// Only sends feedback if operations were actually performed
+func (m *Manager) sendConsolidationFeedback(apiError error, consolidationResult *ConsolidationResult, isUpdate bool) error {
+	// Only send feedback if operations were actually performed
+	if !consolidationResult.OperationsPerformed {
+		m.logger.Debug("No operations were performed, no feedback needed")
+		return nil
 	}
 
-	// Add API error if present
-	if apiError != nil {
-		feedback["errors"].(map[string]string)["api"] = apiError.Error()
-	}
+	// Determine API success (API call succeeded and no API-level errors)
+	apiSuccess := apiError == nil
 
-	// Add consolidation errors
-	for component, err := range consolidationErrors {
-		feedback["errors"].(map[string]string)[component] = err.Error()
-	}
-
-	// Build feedback payload
-	feedbackPayload := &types.StatusUpdatePayload{
-		UpdateType:   "consolidation_feedback",
-		CurrentState: *m.currentState,
-	}
-
-	// Send feedback
-	sendResult := m.StatusUpdateSender.SendStatusUpdateWithResult(feedbackPayload)
-	if sendResult.Error != nil {
-		return fmt.Errorf("failed to send consolidation feedback: %w", sendResult.Error)
-	}
-
-	if success {
-		m.logger.Info("Consolidation feedback sent successfully - all operations succeeded")
-	} else {
-		m.logger.Infof("Consolidation feedback sent successfully - some operations failed")
+	// Send feedback using the feedback manager
+	if err := m.feedbackManager.SendFeedback(apiSuccess, consolidationResult.Errors, isUpdate); err != nil {
+		return fmt.Errorf("failed to send feedback: %w", err)
 	}
 
 	return nil

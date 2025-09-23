@@ -22,6 +22,12 @@ type Sender interface {
 	// SendStatusUpdateWithResult sends a status update and returns detailed result
 	SendStatusUpdateWithResult(payload *types.StatusUpdatePayload) *SendResult
 
+	// SendUpdateFeedback sends update feedback
+	SendUpdateFeedback(payload *types.UpdateFeedbackPayload) error
+
+	// SendUpdateFeedbackWithResult sends update feedback and returns detailed result
+	SendUpdateFeedbackWithResult(payload *types.UpdateFeedbackPayload) *SendResult
+
 	// PerformSelfHeal performs self-healing operations based on send result
 	PerformSelfHeal(result *SendResult, responseHandler StatusUpdateResponseHandler) *SelfHealResult
 
@@ -129,6 +135,65 @@ func (s *StatusUpdateSender) SendStatusUpdateWithResult(payload *types.StatusUpd
 			return result
 		}
 		result.Success = true
+
+	default:
+		result.Error = fmt.Errorf("unsupported communication mode: %s", s.mode)
+	}
+
+	return result
+}
+
+// SendUpdateFeedback sends update feedback
+func (s *StatusUpdateSender) SendUpdateFeedback(payload *types.UpdateFeedbackPayload) error {
+	switch s.mode {
+	case "http", "https":
+		if s.httpClient == nil {
+			return fmt.Errorf("HTTP client not configured")
+		}
+		response, err := s.httpClient.SendUpdateFeedback(payload, s.deviceID)
+		if err != nil {
+			return fmt.Errorf("failed to send HTTP update feedback: %w", err)
+		}
+		if response.StatusCode >= 200 && response.StatusCode < 300 {
+			s.logger.Info("Update feedback sent successfully")
+		} else {
+			return fmt.Errorf("update feedback failed with status: %d", response.StatusCode)
+		}
+
+	case "mqtt":
+		// MQTT feedback not implemented yet - could be added if needed
+		return fmt.Errorf("MQTT feedback not implemented")
+
+	default:
+		return fmt.Errorf("unsupported communication mode: %s", s.mode)
+	}
+
+	return nil
+}
+
+// SendUpdateFeedbackWithResult sends update feedback and returns detailed result
+func (s *StatusUpdateSender) SendUpdateFeedbackWithResult(payload *types.UpdateFeedbackPayload) *SendResult {
+	result := &SendResult{
+		Mode: s.mode,
+	}
+
+	switch s.mode {
+	case "http", "https":
+		if s.httpClient == nil {
+			result.Error = fmt.Errorf("HTTP client not configured")
+			return result
+		}
+		response, err := s.httpClient.SendUpdateFeedback(payload, s.deviceID)
+		if err != nil {
+			result.Error = fmt.Errorf("failed to send HTTP update feedback: %w", err)
+			return result
+		}
+		result.Response = response
+		result.Success = response.StatusCode >= 200 && response.StatusCode < 300
+
+	case "mqtt":
+		// MQTT feedback not implemented yet - could be added if needed
+		result.Error = fmt.Errorf("MQTT feedback not implemented")
 
 	default:
 		result.Error = fmt.Errorf("unsupported communication mode: %s", s.mode)

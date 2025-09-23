@@ -882,29 +882,8 @@ func (i *Installer) saveCertificates(privateKey, certPEM, certChain, caBundle st
 }
 
 func (i *Installer) createSystemdService() error {
-	i.logger.Info("Creating systemd service...")
-
-	serviceContent := fmt.Sprintf(`[Unit]
-Description=StreamDeploy Agent
-After=network.target
-
-[Service]
-Type=simple
-User=root
-ExecStart=%s/streamdeploy-agent %s/agent.json
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-`, InstallDir, ConfigDir)
-
-	if err := os.WriteFile(ServiceFile, []byte(serviceContent), 0644); err != nil {
-		return fmt.Errorf("failed to create service file: %w", err)
-	}
-
-	i.logger.Info("Systemd service created successfully")
-	return nil
+	// Use the consolidated CreateServiceFile function
+	return CreateServiceFile(i.logger)
 }
 
 func (i *Installer) enableAndStartService() error {
@@ -1289,6 +1268,12 @@ Restart=always
 RestartSec=10
 KillMode=mixed
 TimeoutStopSec=30
+
+# Resource accounting
+CPUAccounting=yes
+MemoryAccounting=yes
+IOAccounting=yes
+TasksAccounting=yes
 
 # systemd automatically sets INVOCATION_ID for service detection
 

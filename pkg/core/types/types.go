@@ -130,10 +130,15 @@ type HeartbeatPayload struct {
 	Metrics      map[string]interface{} `json:"metrics"`
 }
 
-// StatusUpdatePayload represents a status update message
+// StatusUpdatePayload represents a status update message for /status-update endpoint
 type StatusUpdatePayload struct {
-	UpdateType   string      `json:"update_type"`
 	CurrentState StateConfig `json:"current_state"`
+}
+
+// UpdateFeedbackPayload represents feedback for /v1-device/update-feedback endpoint
+type UpdateFeedbackPayload struct {
+	Status string      `json:"status"`         // update_failed, update_completed, selfheal_fail, selfheal_completed
+	Data   interface{} `json:"data,omitempty"` // optional, contains consolidationErrors for failures
 }
 
 // HTTPResponse represents an HTTP response
@@ -202,6 +207,7 @@ type MetricsCollector interface {
 type HTTPClient interface {
 	SendHeartbeat(payload *HeartbeatPayload, deviceID string) (*HTTPResponse, error)
 	SendStatusUpdate(payload *StatusUpdatePayload, deviceID string) (*HTTPResponse, error)
+	SendUpdateFeedback(payload *UpdateFeedbackPayload, deviceID string) (*HTTPResponse, error)
 	Post(url string, data []byte, headers map[string]string) (*HTTPResponse, error)
 	Get(url string, headers map[string]string) (*HTTPResponse, error)
 }

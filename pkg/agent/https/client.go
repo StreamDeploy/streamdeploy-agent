@@ -128,6 +128,24 @@ func (c *Client) SendStatusUpdate(payload *types.StatusUpdatePayload, deviceID s
 	return c.Post(url, data, headers)
 }
 
+// SendUpdateFeedback sends update feedback message
+func (c *Client) SendUpdateFeedback(payload *types.UpdateFeedbackPayload, deviceID string) (*types.HTTPResponse, error) {
+	url := fmt.Sprintf("%s/v1-device/update-feedback", c.baseURL)
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal update feedback payload: %w", err)
+	}
+
+	headers := map[string]string{
+		"Content-Type": "application/json",
+		"x-device-id":  deviceID,
+		"User-Agent":   "StreamDeploy-Agent/1.0",
+	}
+
+	return c.Post(url, data, headers)
+}
+
 // Post sends a POST request
 func (c *Client) Post(url string, data []byte, headers map[string]string) (*types.HTTPResponse, error) {
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))

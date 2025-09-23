@@ -20,8 +20,8 @@ func NewPayloadBuilder(
 	}
 }
 
-// BuildStatusUpdatePayload builds a complete status update payload
-func (b *PayloadBuilder) BuildStatusUpdatePayload(updateType string, currentState *types.StateConfig) (*types.StatusUpdatePayload, *types.StateConfig, error) {
+// BuildStatusUpdatePayload builds a complete status update payload for /status-update endpoint
+func (b *PayloadBuilder) BuildStatusUpdatePayload(currentState *types.StateConfig) (*types.StatusUpdatePayload, *types.StateConfig, error) {
 	if currentState == nil {
 		return nil, nil, fmt.Errorf("current state is nil")
 	}
@@ -32,11 +32,24 @@ func (b *PayloadBuilder) BuildStatusUpdatePayload(updateType string, currentStat
 		clonedState = b.cloneStateConfig(currentState)
 	}
 
-	// Build status update payload
+	// Build status update payload (only current_state field)
 	statusUpdate := &types.StatusUpdatePayload{
-		UpdateType:   updateType,
 		CurrentState: *currentState,
 	}
 
 	return statusUpdate, clonedState, nil
+}
+
+// BuildUpdateFeedbackPayload builds a feedback payload for /v1-device/update-feedback endpoint
+func (b *PayloadBuilder) BuildUpdateFeedbackPayload(status string, data interface{}) *types.UpdateFeedbackPayload {
+	payload := &types.UpdateFeedbackPayload{
+		Status: status,
+	}
+
+	// Only include data if it's not nil
+	if data != nil {
+		payload.Data = data
+	}
+
+	return payload
 }
