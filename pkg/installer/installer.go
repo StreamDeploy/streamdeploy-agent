@@ -36,9 +36,11 @@ const (
 
 // RequiredPackages contains the essential packages that must be installed during agent installation
 var RequiredPackages = []string{
-	"ca-certificates",
-	"systemd",
-	"docker.io",
+	"ca-certificates", // For HTTPS/TLS connections
+	"systemd",         // For service management
+	"docker.io",       // For container management
+	"curl",            // For health checks
+	"openssl",         // For certificate expiration checks
 }
 
 // DefaultStateConfig contains the default state configuration values
