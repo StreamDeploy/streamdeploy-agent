@@ -34,13 +34,6 @@ const (
 	MQTTEndpoint  = "https://mqtt.streamdeploy.com"
 )
 
-var RequiredPackages = []string{
-	"curl",
-	"ca-certificates",
-	"systemd",
-	"docker.io",
-}
-
 // DefaultStateConfig contains the default state configuration values
 var DefaultStateConfig = StateConfig{
 	SchemaVersion: "1.0",
@@ -53,31 +46,21 @@ var DefaultStateConfig = StateConfig{
 	},
 	Containers:     []interface{}{},
 	Env:            make(map[string]string),
-	Packages:       RequiredPackages,
 	CustomMetrics:  make(map[string]string),
 	CustomPackages: make(map[string]interface{}),
 }
 
-type PackageManager struct {
-	Type       string `json:"type"`
-	InstallCmd string `json:"install_cmd"`
-	CheckCmd   string `json:"check_cmd"`
-	RemoveCmd  string `json:"remove_cmd"`
-	UpdateCmd  string `json:"update_cmd"`
-}
-
 // DeviceConfig represents the device configuration
 type DeviceConfig struct {
-	DeviceID           string         `json:"device_id"`
-	EnrollBaseURL      string         `json:"enroll_base_url"`
-	HTTPSMTLSEndpoint  string         `json:"https_mtls_endpoint"`
-	MQTTWSMTLSEndpoint string         `json:"mqtt_ws_mtls_endpoint"`
-	PKIDir             string         `json:"pki_dir"`
-	OSName             string         `json:"os_name"`
-	OSVersion          string         `json:"os_version"`
-	Architecture       string         `json:"architecture"`
-	MachineType        string         `json:"machine_type"`
-	PackageManager     PackageManager `json:"package_manager"`
+	DeviceID           string `json:"device_id"`
+	EnrollBaseURL      string `json:"enroll_base_url"`
+	HTTPSMTLSEndpoint  string `json:"https_mtls_endpoint"`
+	MQTTWSMTLSEndpoint string `json:"mqtt_ws_mtls_endpoint"`
+	PKIDir             string `json:"pki_dir"`
+	OSName             string `json:"os_name"`
+	OSVersion          string `json:"os_version"`
+	Architecture       string `json:"architecture"`
+	MachineType        string `json:"machine_type"`
 }
 
 type StateConfig struct {
@@ -117,7 +100,6 @@ type Installer struct {
 	osVersion      string
 	architecture   string
 	machineType    string
-	packageManager PackageManager
 }
 
 // New creates a new installer instance
@@ -184,10 +166,6 @@ func (i *Installer) Run() error {
 
 	if err := i.detectSystem(); err != nil {
 		return fmt.Errorf("failed to detect system information: %w", err)
-	}
-
-	if err := i.installDependencies(); err != nil {
-		return fmt.Errorf("failed to install system dependencies: %w", err)
 	}
 
 	if err := i.ensureAgentBinary(); err != nil {
@@ -302,16 +280,12 @@ func (i *Installer) detectSystem() error {
 	i.osName = osInfo["ID"]
 	i.osVersion = osInfo["VERSION_ID"]
 
-	// Detect package manager
-	i.packageManager = i.detectPackageManager()
-
 	// Detect machine type
 	i.machineType = i.detectMachineType()
 
 	i.logger.Infof("Detected OS: %s %s", i.osName, i.osVersion)
 	i.logger.Infof("Architecture: %s", i.architecture)
 	i.logger.Infof("Machine Type: %s", i.machineType)
-	i.logger.Infof("Package Manager: %s", i.packageManager.Type)
 
 	return nil
 }
@@ -453,6 +427,86 @@ func (i *Installer) detectMachineType() string {
 		return "Generic RISC-V 64"
 	}
 
+	// Check for ARM64-based devices
+	if i.architecture == "arm64" {
+		// Check if it's a virtual machine
+		if hypervisor, err := os.ReadFile("/sys/class/dmi/id/sys_vendor"); err == nil {
+			vendor := strings.TrimSpace(string(hypervisor))
+			if strings.Contains(vendor, "QEMU") || strings.Contains(vendor, "VMware") || strings.Contains(vendor, "VirtualBox") {
+				return "Virtual Machine (" + vendor + ")"
+			}
+		}
+
+		// Check for specific ARM64 devices from DMI
+		if product, err := os.ReadFile("/sys/class/dmi/id/product_name"); err == nil {
+			productStr := strings.TrimSpace(string(product))
+			if strings.Contains(productStr, "Raspberry Pi") {
+				return "Raspberry Pi (" + productStr + ")"
+			}
+			if strings.Contains(productStr, "Orange Pi") {
+				return "Orange Pi (" + productStr + ")"
+			}
+			if strings.Contains(productStr, "Banana Pi") {
+				return "Banana Pi (" + productStr + ")"
+			}
+			if strings.Contains(productStr, "Rockchip") {
+				return "Rockchip (" + productStr + ")"
+			}
+		}
+
+		// Check for ARM64-specific hardware from cpuinfo
+		if cpuInfo, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+			cpuInfoStr := string(cpuInfo)
+
+			// Look for specific ARM64 hardware identifiers
+			if strings.Contains(cpuInfoStr, "Hardware") {
+				lines := strings.Split(cpuInfoStr, "\n")
+				for _, line := range lines {
+					if strings.Contains(line, "Hardware") && strings.Contains(line, ":") {
+						hardware := strings.TrimSpace(strings.Split(line, ":")[1])
+						if strings.Contains(hardware, "Raspberry Pi") {
+							return "Raspberry Pi " + hardware
+						}
+						if strings.Contains(hardware, "Orange Pi") {
+							return "Orange Pi " + hardware
+						}
+						if strings.Contains(hardware, "Banana Pi") {
+							return "Banana Pi " + hardware
+						}
+						if strings.Contains(hardware, "Rockchip") {
+							return "Rockchip " + hardware
+						}
+						if strings.Contains(hardware, "Allwinner") {
+							return "Allwinner " + hardware
+						}
+						if strings.Contains(hardware, "Amlogic") {
+							return "Amlogic " + hardware
+						}
+						if strings.Contains(hardware, "Broadcom") {
+							return "Broadcom " + hardware
+						}
+					}
+				}
+			}
+
+			// Check for specific CPU features that might indicate device type
+			if strings.Contains(cpuInfoStr, "BCM2711") {
+				return "Raspberry Pi 4 Model B"
+			}
+			if strings.Contains(cpuInfoStr, "BCM2835") {
+				return "Raspberry Pi 1/Zero"
+			}
+			if strings.Contains(cpuInfoStr, "BCM2836") {
+				return "Raspberry Pi 2"
+			}
+			if strings.Contains(cpuInfoStr, "BCM2837") {
+				return "Raspberry Pi 3"
+			}
+		}
+
+		return "Generic ARM64"
+	}
+
 	// Check for Intel NUC or other x86-based devices
 	if i.architecture == "amd64" || i.architecture == "x86_64" {
 		// Check if it's a virtual machine
@@ -504,102 +558,9 @@ func (i *Installer) parseOSRelease() (map[string]string, error) {
 	return osInfo, scanner.Err()
 }
 
-func (i *Installer) detectPackageManager() PackageManager {
-	managers := []struct {
-		command string
-		pm      PackageManager
-	}{
-		{"apt-get", PackageManager{
-			Type:       "apt",
-			InstallCmd: "apt-get install -y",
-			CheckCmd:   "dpkg -s",
-			RemoveCmd:  "apt-get remove -y",
-			UpdateCmd:  "apt-get update",
-		}},
-		{"yum", PackageManager{
-			Type:       "yum",
-			InstallCmd: "yum install -y",
-			CheckCmd:   "rpm -q",
-			RemoveCmd:  "yum remove -y",
-			UpdateCmd:  "yum update",
-		}},
-		{"apk", PackageManager{
-			Type:       "apk",
-			InstallCmd: "apk add",
-			CheckCmd:   "apk info",
-			RemoveCmd:  "apk del",
-			UpdateCmd:  "apk update",
-		}},
-		{"pacman", PackageManager{
-			Type:       "pacman",
-			InstallCmd: "pacman -S --noconfirm",
-			CheckCmd:   "pacman -Q",
-			RemoveCmd:  "pacman -R --noconfirm",
-			UpdateCmd:  "pacman -Sy",
-		}},
-	}
-
-	for _, mgr := range managers {
-		if i.commandExists(mgr.command) {
-			return mgr.pm
-		}
-	}
-
-	return PackageManager{Type: "unknown"}
-}
-
 func (i *Installer) commandExists(command string) bool {
 	_, err := exec.LookPath(command)
 	return err == nil
-}
-
-func (i *Installer) installDependencies() error {
-	i.logger.Info("=== Installing System Dependencies ===")
-
-	if i.packageManager.Type == "unknown" {
-		i.logger.Info("Unknown package manager, skipping dependency installation")
-		return nil
-	}
-
-	i.logger.Infof("Using package manager: %s", i.packageManager.Type)
-
-	// Update package list
-	i.logger.Info("Updating package list...")
-	if err := i.runCommandWithLog(i.packageManager.UpdateCmd, "Updating package list"); err != nil {
-		i.logger.Errorf("Failed to update package list: %v", err)
-	}
-
-	// Install packages
-	for _, pkg := range RequiredPackages {
-		cmd := fmt.Sprintf("%s %s", i.packageManager.InstallCmd, pkg)
-		if err := i.runCommandWithLog(cmd, fmt.Sprintf("Installing %s", pkg)); err != nil {
-			i.logger.Errorf("Failed to install %s: %v", pkg, err)
-			// Continue with other packages
-		} else {
-			i.logger.Infof("✓ Successfully installed %s", pkg)
-		}
-	}
-
-	i.logger.Info("=== Dependency Installation Complete ===")
-	return nil
-}
-
-func (i *Installer) runCommandWithLog(command string, description string) error {
-	i.logger.Infof("Running: %s", description)
-	cmd := exec.Command("sh", "-c", command)
-
-	// Set working directory to root to avoid getcwd() issues
-	cmd.Dir = "/"
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		i.logger.Errorf("Command failed: %s", string(output))
-		return err
-	}
-	if len(output) > 0 {
-		i.logger.Infof("Command output: %s", string(output))
-	}
-	return nil
 }
 
 func (i *Installer) ensureAgentBinary() error {
@@ -672,7 +633,6 @@ func (i *Installer) createConfig() error {
 		OSVersion:          i.osVersion,
 		Architecture:       i.architecture,
 		MachineType:        i.machineType,
-		PackageManager:     i.packageManager,
 	}
 
 	deviceConfigPath := filepath.Join(ConfigDir, "agent.json")
@@ -1664,7 +1624,6 @@ func PerformCertificateEnrollment(logger types.Logger, deviceConfig *DeviceConfi
 		osVersion:      deviceConfig.OSVersion,
 		architecture:   deviceConfig.Architecture,
 		machineType:    deviceConfig.MachineType,
-		packageManager: deviceConfig.PackageManager,
 	}
 
 	// Run only the certificate exchange part (not the full installer)
