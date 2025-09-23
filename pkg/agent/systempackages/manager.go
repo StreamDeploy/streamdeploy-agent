@@ -87,24 +87,30 @@ func (m *Manager) CompareStates(currentState, desiredState []string) ([]string, 
 	for name, desiredInfo := range desiredParsed {
 		if currentInfo, exists := currentParsed[name]; exists {
 			// Package exists, check if version needs change
-			if desiredInfo.HasVersion {
-				// Desired state has a specific version requirement
+			if desiredInfo.HasVersion && desiredInfo.Version != "any" {
+				// Desired state has a specific version requirement (not "any")
 				if currentInfo.HasVersion && currentInfo.Version != desiredInfo.Version {
 					// Version mismatch - destroy current version and create desired version
 					toDestroy = append(toDestroy, fmt.Sprintf("%s=%s", name, currentInfo.Version))
 					toCreate = append(toCreate, fmt.Sprintf("%s=%s", name, desiredInfo.Version))
-				} else if !currentInfo.HasVersion {
-					// Current package has no version but desired state requires specific version
-					// Destroy the unversioned package and create the versioned one
-					toDestroy = append(toDestroy, name)
+				} else if !currentInfo.HasVersion || currentInfo.Version == "any" {
+					// Current package has no version or "any" version but desired state requires specific version
+					// Destroy the unversioned/any package and create the versioned one
+					if currentInfo.HasVersion && currentInfo.Version == "any" {
+						toDestroy = append(toDestroy, fmt.Sprintf("%s=any", name))
+					} else {
+						toDestroy = append(toDestroy, name)
+					}
 					toCreate = append(toCreate, fmt.Sprintf("%s=%s", name, desiredInfo.Version))
 				}
 				// If both have versions and they match, no action needed
+			} else {
+				// Desired state has no version or version="any" (any version acceptable)
+				// No action needed - current version (whether specific or "any") is acceptable
 			}
-			// If desired state has no version (any version acceptable), no action needed
 		} else {
 			// Package doesn't exist - needs creation
-			if desiredInfo.HasVersion {
+			if desiredInfo.HasVersion && desiredInfo.Version != "any" {
 				toCreate = append(toCreate, fmt.Sprintf("%s=%s", name, desiredInfo.Version))
 			} else {
 				toCreate = append(toCreate, name)

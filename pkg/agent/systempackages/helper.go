@@ -36,9 +36,18 @@ func parsePackageString(pkgStr string) PackageInfo {
 	if strings.Contains(pkgStr, "=") {
 		parts := strings.SplitN(pkgStr, "=", 2)
 		if len(parts) == 2 {
+			version := strings.TrimSpace(parts[1])
+			// Special case: "any" version means no specific version requirement
+			if version == "any" {
+				return PackageInfo{
+					Name:       strings.TrimSpace(parts[0]),
+					Version:    "any",
+					HasVersion: false, // "any" means no specific version requirement
+				}
+			}
 			return PackageInfo{
 				Name:       strings.TrimSpace(parts[0]),
-				Version:    strings.TrimSpace(parts[1]),
+				Version:    version,
 				HasVersion: true,
 			}
 		}
