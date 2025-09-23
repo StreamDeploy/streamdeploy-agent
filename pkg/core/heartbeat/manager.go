@@ -53,6 +53,11 @@ func (m *Manager) StartHeartbeatLoop(ctx context.Context, interval time.Duration
 		return fmt.Errorf("heartbeat loop is already running")
 	}
 
+	if interval <= 0 {
+		m.logger.Info("Heartbeat not started: interval is non-positive (disabled)")
+		return nil
+	}
+
 	m.running = true
 	m.logger.Infof("Heartbeat loop started with interval: %v", interval)
 

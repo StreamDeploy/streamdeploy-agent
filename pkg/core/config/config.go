@@ -390,7 +390,8 @@ func ParseFrequency(freq string) int {
 // ParseFrequencyToDuration parses a frequency string into time.Duration
 func ParseFrequencyToDuration(freq string) time.Duration {
 	if freq == "" {
-		return 15 * time.Second // default 15 seconds
+		// Empty string explicitly disables heartbeat/status when used for those settings
+		return 0
 	}
 
 	freq = strings.TrimSpace(freq)

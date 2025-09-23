@@ -161,6 +161,7 @@ func (m *Manager) performStatusUpdateCycle() error {
 	// Step 3: Process API response - update desired state if new_state received
 	var hasCommand bool
 	var command interface{}
+	var hasNewState bool
 
 	if apiError == nil && apiResponse != nil {
 		m.logger.Debug("Step 3: Processing API response")
@@ -169,6 +170,7 @@ func (m *Manager) performStatusUpdateCycle() error {
 			m.logger.Errorf("Failed to process API response: %v", err)
 		} else {
 			if newState != nil {
+				hasNewState = true
 				m.logger.Info("Received new desired state from API")
 				// Update desired state and save to config
 				m.agent.SetDesiredState(newState)
@@ -177,6 +179,8 @@ func (m *Manager) performStatusUpdateCycle() error {
 				} else {
 					m.logger.Debug("New desired state saved to config successfully")
 				}
+			} else {
+				m.logger.Debug("API returned empty state ({}), no state changes needed")
 			}
 			if cmd != nil {
 				hasCommand = true
@@ -205,8 +209,13 @@ func (m *Manager) performStatusUpdateCycle() error {
 	// Step 6: Collect all errors and send feedback to backend
 	m.logger.Debug("Step 6: Collecting results and sending feedback")
 	// Determine if this was triggered by an API update (only if API succeeded and provided new state/command)
-	// If API failed, it's considered selfheal
-	isUpdate := (apiError == nil) && (hasCommand || (apiResponse != nil))
+	// If API failed or returned empty state ({}), it's considered selfheal
+	isUpdate := (apiError == nil) && (hasCommand || hasNewState)
+	if isUpdate {
+		m.logger.Info("Status update triggered by API (new state or command received)")
+	} else {
+		m.logger.Info("Status update triggered by self-healing (no new state or command from API)")
+	}
 	if err := m.sendConsolidationFeedback(apiError, consolidationResult, isUpdate); err != nil {
 		m.logger.Errorf("Failed to send consolidation feedback: %v", err)
 	}

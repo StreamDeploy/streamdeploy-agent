@@ -634,8 +634,11 @@ func (i *Installer) detectMachineType() string {
 		return "Generic x86_64"
 	}
 
-	// Default fallback
-	return "Unknown"
+	// Default fallback - never return empty or "Unknown"
+	if i.architecture != "" {
+		return "Generic " + i.architecture
+	}
+	return "Generic"
 }
 
 func (i *Installer) parseOSRelease() (map[string]string, error) {

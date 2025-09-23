@@ -584,7 +584,7 @@ func generateSessionID() string {
 
 // HandleCustomCommand handles custom commands (those starting with "custom ")
 func (stm *SSHTunnelManager) HandleCustomCommand(command string) error {
-	// Parse command: "custom ssh user_456 2024-01-01T12:00:00Z"
+	// Parse command: "custom ssh {user_id}"
 	parts := strings.Fields(command)
 
 	if len(parts) < 2 {
@@ -602,31 +602,20 @@ func (stm *SSHTunnelManager) HandleCustomCommand(command string) error {
 
 // HandleSSHTunnelCommand handles SSH tunnel commands
 func (stm *SSHTunnelManager) HandleSSHTunnelCommand(command string) error {
-	// Parse command: "custom ssh user_456 2024-01-01T12:00:00Z" or "ssh user123"
+	// Parse command: "custom ssh {user_id}"
 	parts := strings.Fields(command)
 
-	var user string
-	var expires time.Time
-	var err error
-
-	if len(parts) == 2 {
-		// Format: "ssh user123" - use default expiration (1 hour from now)
-		user = parts[1]
-		expires = time.Now().Add(1 * time.Hour)
-		stm.logger.Infof("Using default expiration time: %s", expires.Format(time.RFC3339))
-	} else if len(parts) == 4 {
-		// Format: "custom ssh user_456 2024-01-01T12:00:00Z"
-		user = parts[2]
-		expiresStr := parts[3]
-
-		// Parse expiration time
-		expires, err = time.Parse(time.RFC3339, expiresStr)
-		if err != nil {
-			return fmt.Errorf("invalid expiration time format: %s", expiresStr)
-		}
-	} else {
-		return fmt.Errorf("invalid SSH tunnel command format: %s (expected 'ssh user123' or 'custom ssh user_456 2024-01-01T12:00:00Z')", command)
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid SSH tunnel command format: %s (expected 'custom ssh {user_id}')", command)
 	}
+
+	if parts[0] != "custom" || parts[1] != "ssh" {
+		return fmt.Errorf("invalid SSH tunnel command format: %s (expected 'custom ssh {user_id}')", command)
+	}
+
+	user := parts[2]
+	expires := time.Now().Add(1 * time.Hour)
+	stm.logger.Infof("Starting SSH tunnel for user: %s, expires: %s", user, expires.Format(time.RFC3339))
 
 	// Check if tunnel is already active
 	if stm.IsTunnelActive() {
