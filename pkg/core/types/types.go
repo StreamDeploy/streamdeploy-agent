@@ -94,6 +94,7 @@ type ContainerConfig struct {
 	Volumes    []VolumeMount     `json:"volumes,omitempty"`     // Optional: Volume mounts
 	WorkingDir string            `json:"working_dir,omitempty"` // Optional: Working directory
 	User       string            `json:"user,omitempty"`        // Optional: User to run as
+	Groups     []string          `json:"groups,omitempty"`      // Optional: Additional group IDs (GIDs) to add
 	Entrypoint []string          `json:"entrypoint,omitempty"`  // Optional: Entrypoint override
 	Hostname   string            `json:"hostname,omitempty"`    // Optional: Container hostname
 	Network    string            `json:"network,omitempty"`     // Optional: Network mode
@@ -195,6 +196,7 @@ type ConfigManager interface {
 	SetAgent(agent interface{})
 	HandleStateConfigChange(isError bool)
 	HandleDeviceConfigChange(isError bool)
+	SetAgentSettings(agentSetting AgentSetting)
 }
 
 // MetricsCollector interface for metrics collection

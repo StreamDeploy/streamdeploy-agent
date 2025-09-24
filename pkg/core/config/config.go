@@ -125,6 +125,16 @@ func (m *Manager) IsStateConfigEmpty(config *types.StateConfig) bool {
 	return isStateConfigEmpty(config)
 }
 
+// SetAgentSettings updates agent settings in memory without saving to file
+func (m *Manager) SetAgentSettings(agentSetting types.AgentSetting) {
+	if m.stateConfig == nil {
+		return
+	}
+
+	// Update agent settings in memory
+	m.stateConfig.AgentSetting = agentSetting
+}
+
 // isStateConfigEmpty checks if a state configuration is empty (no meaningful content)
 func isStateConfigEmpty(config *types.StateConfig) bool {
 	if config == nil {

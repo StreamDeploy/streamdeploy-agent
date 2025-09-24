@@ -172,13 +172,8 @@ func (m *Manager) performStatusUpdateCycle() error {
 			if newState != nil {
 				hasNewState = true
 				m.logger.Info("Received new desired state from API")
-				// Update desired state and save to config
+				// Update desired state in memory only (state.json will be saved later)
 				m.agent.SetDesiredState(newState)
-				if err := m.configManager.UpdateStateConfig(newState); err != nil {
-					m.logger.Errorf("Failed to save new state to config: %v", err)
-				} else {
-					m.logger.Debug("New desired state saved to config successfully")
-				}
 			} else {
 				m.logger.Debug("API returned empty state ({}), no state changes needed")
 			}
@@ -202,12 +197,35 @@ func (m *Manager) performStatusUpdateCycle() error {
 		}
 	}
 
-	// Step 5: Individual manager state comparison and consolidation
-	m.logger.Debug("Step 5: Performing state consolidation")
+	// Step 5: Update agent settings in memory (logging_level, mode, update_frequency, heartbeat_frequency)
+	if hasNewState {
+		m.logger.Debug("Step 5: Updating agent settings in memory")
+		if err := m.updateAgentSettingsInMemory(); err != nil {
+			m.logger.Errorf("Failed to update agent settings in memory: %v", err)
+		} else {
+			m.logger.Debug("Agent settings updated in memory successfully")
+		}
+	}
+
+	// Step 6: Individual manager state comparison and consolidation
+	m.logger.Debug("Step 6: Performing state consolidation")
 	consolidationResult := m.performStateConsolidation()
 
-	// Step 6: Collect all errors and send feedback to backend
-	m.logger.Debug("Step 6: Collecting results and sending feedback")
+	// Step 7: Update state.json after all operations complete
+	if hasNewState {
+		m.logger.Debug("Step 7: Updating state.json")
+		desiredState := m.agent.GetDesiredState()
+		if desiredState != nil {
+			if err := m.configManager.UpdateStateConfig(desiredState); err != nil {
+				m.logger.Errorf("Failed to save state to config: %v", err)
+			} else {
+				m.logger.Debug("State saved to config successfully")
+			}
+		}
+	}
+
+	// Step 8: Collect all errors and send feedback to backend
+	m.logger.Debug("Step 8: Collecting results and sending feedback")
 	// Determine if this was triggered by an API update (only if API succeeded and provided new state/command)
 	// If API failed or returned empty state ({}), it's considered selfheal
 	isUpdate := (apiError == nil) && (hasCommand || hasNewState)
@@ -327,7 +345,21 @@ func (m *Manager) performStateConsolidation() *ConsolidationResult {
 		return result
 	}
 
-	// System package state consolidation (before containers)
+	// Environment state consolidation (first)
+	if m.environmentManager != nil {
+		m.logger.Info("Performing environment state consolidation")
+		desiredEnv := desiredState.Env
+		if err := m.environmentManager.SyncSystemEnvironment(desiredEnv); err != nil {
+			result.Errors["environment"] = err
+			m.logger.Errorf("Environment state consolidation failed: %v", err)
+		} else {
+			// Environment manager doesn't return changes, so we assume operations were performed if no error
+			result.OperationsPerformed = true
+			m.logger.Info("Environment state consolidation completed successfully")
+		}
+	}
+
+	// System package state consolidation (second)
 	if m.systemPackageManager != nil {
 		m.logger.Info("Performing system package state consolidation")
 		currentPackages := m.currentState.Packages
@@ -345,7 +377,7 @@ func (m *Manager) performStateConsolidation() *ConsolidationResult {
 		}
 	}
 
-	// Custom package state consolidation (before containers)
+	// Custom package state consolidation (third)
 	if m.customPackageManager != nil {
 		m.logger.Info("Performing custom package state consolidation")
 		currentCustomPackages := m.currentState.CustomPackages
@@ -363,7 +395,7 @@ func (m *Manager) performStateConsolidation() *ConsolidationResult {
 		}
 	}
 
-	// Container state consolidation (after packages)
+	// Container state consolidation (last)
 	if m.containerManager != nil {
 		m.logger.Info("Performing container state consolidation")
 		currentContainers := m.currentState.Containers
@@ -378,20 +410,6 @@ func (m *Manager) performStateConsolidation() *ConsolidationResult {
 			} else {
 				m.logger.Info("Container state consolidation completed successfully - no changes needed")
 			}
-		}
-	}
-
-	// Environment state consolidation
-	if m.environmentManager != nil {
-		m.logger.Info("Performing environment state consolidation")
-		desiredEnv := desiredState.Env
-		if err := m.environmentManager.SyncSystemEnvironment(desiredEnv); err != nil {
-			result.Errors["environment"] = err
-			m.logger.Errorf("Environment state consolidation failed: %v", err)
-		} else {
-			// Environment manager doesn't return changes, so we assume operations were performed if no error
-			result.OperationsPerformed = true
-			m.logger.Info("Environment state consolidation completed successfully")
 		}
 	}
 
@@ -417,6 +435,26 @@ func (m *Manager) sendConsolidationFeedback(apiError error, consolidationResult 
 	if err := m.feedbackManager.SendFeedback(apiSuccess, consolidationResult.Errors, isUpdate, currentState); err != nil {
 		return fmt.Errorf("failed to send feedback: %w", err)
 	}
+
+	return nil
+}
+
+// updateAgentSettingsInMemory updates agent settings in memory without saving to file
+func (m *Manager) updateAgentSettingsInMemory() error {
+	desiredState := m.agent.GetDesiredState()
+	if desiredState == nil {
+		return fmt.Errorf("desired state is nil")
+	}
+
+	// Update agent settings in the config manager's memory
+	// This updates logging_level, mode, update_frequency, and heartbeat_frequency
+	m.configManager.SetAgentSettings(desiredState.AgentSetting)
+
+	m.logger.Debugf("Agent settings updated in memory: logging_level=%s, mode=%s, update_frequency=%s, heartbeat_frequency=%s",
+		desiredState.AgentSetting.LoggingLevel,
+		desiredState.AgentSetting.Mode,
+		desiredState.AgentSetting.UpdateFrequency,
+		desiredState.AgentSetting.HeartbeatFrequency)
 
 	return nil
 }

@@ -78,10 +78,11 @@ func (m *Manager) getExistingContainerConfig(name string) (*types.ContainerConfi
 	containerData := inspectData[0]
 	config := &types.ContainerConfig{
 		Name: name,
-		// Initialize maps
+		// Initialize maps and slices
 		Env:     map[string]string{},
 		Labels:  map[string]string{},
 		Sysctls: map[string]string{},
+		Groups:  []string{},
 	}
 
 	// Extract image
@@ -159,6 +160,17 @@ func (m *Manager) getExistingContainerConfig(name string) (*types.ContainerConfi
 			for key, value := range labels {
 				if valueStr, ok := value.(string); ok {
 					config.Labels[key] = valueStr
+				}
+			}
+		}
+	}
+
+	// Extract group-add from HostConfig
+	if hostConfig, ok := containerData["HostConfig"].(map[string]interface{}); ok {
+		if groupAdds, ok := hostConfig["GroupAdd"].([]interface{}); ok {
+			for _, groupAdd := range groupAdds {
+				if groupStr, ok := groupAdd.(string); ok {
+					config.Groups = append(config.Groups, groupStr)
 				}
 			}
 		}
@@ -254,6 +266,11 @@ func (m *Manager) StartContainer(config *types.ContainerConfig) error {
 	// Add user
 	if config.User != "" {
 		args = append(args, "-u", config.User)
+	}
+
+	// Add group-add options
+	for _, group := range config.Groups {
+		args = append(args, "--group-add", group)
 	}
 
 	// Add hostname
@@ -401,6 +418,12 @@ func (m *Manager) configsEqual(a, b types.ContainerConfig) bool {
 	// Compare User field
 	if a.User != b.User {
 		m.logger.Debugf("Container %s user differs: current='%s', desired='%s'", a.Name, a.User, b.User)
+		return false
+	}
+
+	// Compare Groups field
+	if !m.stringSlicesEqual(a.Groups, b.Groups) {
+		m.logger.Debugf("Container %s groups differ", a.Name)
 		return false
 	}
 
