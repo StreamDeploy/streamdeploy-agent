@@ -146,6 +146,29 @@ The agent will automatically detect if it needs to run the installer flow based 
 }
 ```
 
+### Status Update Schema Fallback
+
+When receiving status updates from the server, if certain fields are missing from the incoming configuration, the agent will preserve the existing values instead of overwriting them with empty defaults.
+
+**Example Scenario:**
+- Current config has `heartbeat_frequency: "15s"` and `update_frequency: "30s"`
+- Server sends update with only containers changes, missing these frequency fields
+- Agent preserves existing `"15s"` and `"30s"` values instead of using defaults
+
+**Fields that are preserved when missing:**
+- `heartbeat_frequency`
+- `update_frequency` 
+- `mode`
+- `agent_ver`
+- `logging_level`
+- `containers` (if empty array)
+- `packages` (if empty array)
+- `env` (if empty object)
+- `custom_metrics` (if empty object)
+- `custom_packages` (if empty object)
+
+This ensures backward compatibility and prevents accidental loss of configuration when the server sends partial updates.
+
 ## Running
 
 ### Automatic Service Management

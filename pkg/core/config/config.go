@@ -105,12 +105,20 @@ func (m *Manager) UpdateStateConfig(config *types.StateConfig) error {
 		return nil
 	}
 
-	// Ensure mode is never empty
-	if config.AgentSetting.Mode == "" {
-		config.AgentSetting.Mode = "http"
+	// Merge the new config with existing values to preserve missing fields
+	mergedConfig := m.mergeStateConfig(m.stateConfig, config)
+
+	// Log when we're preserving existing values
+	if m.agent != nil {
+		m.logPreservedValues(m.stateConfig, config, mergedConfig)
 	}
 
-	m.stateConfig = config
+	// Ensure mode is never empty
+	if mergedConfig.AgentSetting.Mode == "" {
+		mergedConfig.AgentSetting.Mode = "http"
+	}
+
+	m.stateConfig = mergedConfig
 	err := m.SaveStateConfig()
 
 	m.updatingMutex.Lock()
@@ -786,4 +794,115 @@ func (m *Manager) detectCurrentState(desiredState *types.StateConfig) *types.Sta
 	// This would need to be implemented to call the statusupdate.DetectCurrentState function
 	// For now, return the desired state as a placeholder
 	return desiredState
+}
+
+// mergeStateConfig merges a new state config with existing values, preserving existing values for missing fields
+func (m *Manager) mergeStateConfig(existing, new *types.StateConfig) *types.StateConfig {
+	if existing == nil {
+		return new
+	}
+	if new == nil {
+		return existing
+	}
+
+	// Start with a copy of the new config
+	merged := &types.StateConfig{
+		SchemaVersion:  new.SchemaVersion,
+		AgentSetting:   new.AgentSetting,
+		Containers:     new.Containers,
+		Env:            new.Env,
+		Packages:       new.Packages,
+		CustomMetrics:  new.CustomMetrics,
+		CustomPackages: new.CustomPackages,
+	}
+
+	// If new schema version is empty, use existing
+	if merged.SchemaVersion == "" {
+		merged.SchemaVersion = existing.SchemaVersion
+	}
+
+	// Merge agent settings, preserving existing values for missing fields
+	if merged.AgentSetting.HeartbeatFrequency == "" {
+		merged.AgentSetting.HeartbeatFrequency = existing.AgentSetting.HeartbeatFrequency
+	}
+	if merged.AgentSetting.UpdateFrequency == "" {
+		merged.AgentSetting.UpdateFrequency = existing.AgentSetting.UpdateFrequency
+	}
+	if merged.AgentSetting.Mode == "" {
+		merged.AgentSetting.Mode = existing.AgentSetting.Mode
+	}
+	if merged.AgentSetting.AgentVer == "" {
+		merged.AgentSetting.AgentVer = existing.AgentSetting.AgentVer
+	}
+	if merged.AgentSetting.LoggingLevel == "" {
+		merged.AgentSetting.LoggingLevel = existing.AgentSetting.LoggingLevel
+	}
+
+	// If containers slice is empty, use existing
+	if len(merged.Containers) == 0 {
+		merged.Containers = existing.Containers
+	}
+
+	// If env map is empty, use existing
+	if len(merged.Env) == 0 {
+		merged.Env = existing.Env
+	}
+
+	// If packages slice is empty, use existing
+	if len(merged.Packages) == 0 {
+		merged.Packages = existing.Packages
+	}
+
+	// If custom_metrics map is empty, use existing
+	if len(merged.CustomMetrics) == 0 {
+		merged.CustomMetrics = existing.CustomMetrics
+	}
+
+	// If custom_packages map is empty, use existing
+	if len(merged.CustomPackages) == 0 {
+		merged.CustomPackages = existing.CustomPackages
+	}
+
+	return merged
+}
+
+// logPreservedValues logs when existing values are being preserved due to missing fields in the new config
+func (m *Manager) logPreservedValues(existing, new, merged *types.StateConfig) {
+	if existing == nil || new == nil || merged == nil {
+		return
+	}
+
+	// Check agent settings
+	if new.AgentSetting.HeartbeatFrequency == "" && existing.AgentSetting.HeartbeatFrequency != "" {
+		m.agent.GetLogger().Infof("Preserving existing heartbeat_frequency: %s", existing.AgentSetting.HeartbeatFrequency)
+	}
+	if new.AgentSetting.UpdateFrequency == "" && existing.AgentSetting.UpdateFrequency != "" {
+		m.agent.GetLogger().Infof("Preserving existing update_frequency: %s", existing.AgentSetting.UpdateFrequency)
+	}
+	if new.AgentSetting.Mode == "" && existing.AgentSetting.Mode != "" {
+		m.agent.GetLogger().Infof("Preserving existing mode: %s", existing.AgentSetting.Mode)
+	}
+	if new.AgentSetting.AgentVer == "" && existing.AgentSetting.AgentVer != "" {
+		m.agent.GetLogger().Infof("Preserving existing agent_ver: %s", existing.AgentSetting.AgentVer)
+	}
+	if new.AgentSetting.LoggingLevel == "" && existing.AgentSetting.LoggingLevel != "" {
+		m.agent.GetLogger().Infof("Preserving existing logging_level: %s", existing.AgentSetting.LoggingLevel)
+	}
+
+	// Check other sections
+	if len(new.Containers) == 0 && len(existing.Containers) > 0 {
+		m.agent.GetLogger().Infof("Preserving existing containers configuration (%d containers)", len(existing.Containers))
+	}
+	if len(new.Env) == 0 && len(existing.Env) > 0 {
+		m.agent.GetLogger().Infof("Preserving existing environment variables (%d variables)", len(existing.Env))
+	}
+	if len(new.Packages) == 0 && len(existing.Packages) > 0 {
+		m.agent.GetLogger().Infof("Preserving existing packages configuration (%d packages)", len(existing.Packages))
+	}
+	if len(new.CustomMetrics) == 0 && len(existing.CustomMetrics) > 0 {
+		m.agent.GetLogger().Infof("Preserving existing custom_metrics configuration (%d metrics)", len(existing.CustomMetrics))
+	}
+	if len(new.CustomPackages) == 0 && len(existing.CustomPackages) > 0 {
+		m.agent.GetLogger().Infof("Preserving existing custom_packages configuration (%d packages)", len(existing.CustomPackages))
+	}
 }
