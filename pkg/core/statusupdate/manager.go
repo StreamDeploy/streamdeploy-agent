@@ -207,25 +207,12 @@ func (m *Manager) performStatusUpdateCycle() error {
 		}
 	}
 
-	// Step 5: Update state.json after all operations complete
-	if hasNewState {
-		m.logger.Debug("Step 5: Updating state.json")
-		desiredState := m.agent.GetDesiredState()
-		if desiredState != nil {
-			if err := m.configManager.UpdateStateConfig(desiredState); err != nil {
-				m.logger.Errorf("Failed to save state to config: %v", err)
-			} else {
-				m.logger.Debug("State saved to config successfully")
-			}
-		}
-	}
-
-	// Step 6: Individual manager state comparison and consolidation
-	m.logger.Debug("Step 6: Performing state consolidation")
+	// Step 5: Individual manager state comparison and consolidation
+	m.logger.Debug("Step 5: Performing state consolidation")
 	consolidationResult := m.performStateConsolidation()
 
-	// Step 7: Collect all errors and send feedback to backend
-	m.logger.Debug("Step 7: Collecting results and sending feedback")
+	// Step 6: Collect all errors and send feedback to backend
+	m.logger.Debug("Step 6: Collecting results and sending feedback")
 	// Only send feedback if changes were made or new state was received
 	if hasNewState || consolidationResult.OperationsPerformed {
 		// Determine if this was triggered by an API update (only if API succeeded and provided new state/command)
@@ -241,6 +228,19 @@ func (m *Manager) performStatusUpdateCycle() error {
 		}
 	} else {
 		m.logger.Info("No changes made and no new state received, skipping feedback")
+	}
+
+	// Step 7: Update state.json after all operations complete (only if there are changes and no errors)
+	if hasNewState && len(consolidationResult.Errors) == 0 {
+		m.logger.Debug("Step 7: Updating state.json")
+		desiredState := m.agent.GetDesiredState()
+		if desiredState != nil {
+			if err := m.configManager.UpdateStateConfig(desiredState); err != nil {
+				m.logger.Errorf("Failed to save state to config: %v", err)
+			} else {
+				m.logger.Debug("State saved to config successfully")
+			}
+		}
 	}
 
 	m.logger.Info("Status update cycle completed")
