@@ -231,7 +231,7 @@ type ContainerManager interface {
 	CompareStates(currentState, desiredState []ContainerConfig) ([]ContainerConfig, []ContainerConfig)
 	Destroy(containers []ContainerConfig) error
 	Create(containers []ContainerConfig) error
-	StateConsolidation(currentState, desiredState []ContainerConfig) ([]ContainerConfig, error)
+	StateConsolidation(currentState, desiredState []ContainerConfig) ([]ContainerConfig, bool, error) // Returns (updatedState, changesMade, error)
 }
 
 // SystemPackageManager interface for system package management
@@ -240,7 +240,7 @@ type SystemPackageManager interface {
 	CompareStates(currentState, desiredState []string) ([]string, []string)
 	Destroy(packages []string) error
 	Create(packages []string) error
-	StateConsolidation(currentState, desiredState []string) ([]string, error)
+	StateConsolidation(currentState, desiredState []string) ([]string, bool, error) // Returns (updatedState, changesMade, error)
 }
 
 // CustomPackageManager interface for custom package management
@@ -249,7 +249,7 @@ type CustomPackageManager interface {
 	CompareStates(currentState, desiredState map[string]CustomPackage) (map[string]CustomPackage, map[string]CustomPackage)
 	Destroy(packages map[string]CustomPackage) ([]string, error)
 	Create(packages map[string]CustomPackage) ([]string, error)
-	StateConsolidation(currentState, desiredState map[string]CustomPackage) (map[string]CustomPackage, error)
+	StateConsolidation(currentState, desiredState map[string]CustomPackage) (map[string]CustomPackage, bool, error) // Returns (updatedState, changesMade, error)
 }
 
 // CertificateManager interface for certificate management
@@ -265,7 +265,7 @@ type CertificateManager interface {
 
 // EnvironmentManager interface for system environment management
 type EnvironmentManager interface {
-	SyncSystemEnvironment(envVars map[string]string) error
+	SyncSystemEnvironment(envVars map[string]string) (map[string]string, bool, error) // Returns (updatedState, changesMade, error)
 	GetCurrentSystemEnvironment() (map[string]string, error)
 	RemoveSystemEnvironment() error
 }

@@ -187,7 +187,7 @@ func (m *Manager) performStatusUpdateCycle() error {
 		m.logger.Errorf("API call failed: %v", apiError)
 	}
 
-	// Step 4: Execute command if present (before state consolidation)
+	// Step 4: Execute command if present
 	if hasCommand {
 		m.logger.Info("Executing command")
 		if err := m.agent.ExecuteCommand(command); err != nil {
@@ -207,13 +207,9 @@ func (m *Manager) performStatusUpdateCycle() error {
 		}
 	}
 
-	// Step 6: Individual manager state comparison and consolidation
-	m.logger.Debug("Step 6: Performing state consolidation")
-	consolidationResult := m.performStateConsolidation()
-
-	// Step 7: Update state.json after all operations complete
+	// Step 5: Update state.json after all operations complete
 	if hasNewState {
-		m.logger.Debug("Step 7: Updating state.json")
+		m.logger.Debug("Step 5: Updating state.json")
 		desiredState := m.agent.GetDesiredState()
 		if desiredState != nil {
 			if err := m.configManager.UpdateStateConfig(desiredState); err != nil {
@@ -224,18 +220,27 @@ func (m *Manager) performStatusUpdateCycle() error {
 		}
 	}
 
-	// Step 8: Collect all errors and send feedback to backend
-	m.logger.Debug("Step 8: Collecting results and sending feedback")
-	// Determine if this was triggered by an API update (only if API succeeded and provided new state/command)
-	// If API failed or returned empty state ({}), it's considered selfheal
-	isUpdate := (apiError == nil) && (hasCommand || hasNewState)
-	if isUpdate {
-		m.logger.Info("Status update triggered by API (new state or command received)")
+	// Step 6: Individual manager state comparison and consolidation
+	m.logger.Debug("Step 6: Performing state consolidation")
+	consolidationResult := m.performStateConsolidation()
+
+	// Step 7: Collect all errors and send feedback to backend
+	m.logger.Debug("Step 7: Collecting results and sending feedback")
+	// Only send feedback if changes were made or new state was received
+	if hasNewState || consolidationResult.OperationsPerformed {
+		// Determine if this was triggered by an API update (only if API succeeded and provided new state/command)
+		// If API failed or returned empty state ({}), it's considered selfheal
+		isUpdate := (apiError == nil) && (hasCommand || hasNewState)
+		if isUpdate {
+			m.logger.Info("Status update triggered by API (new state or command received)")
+		} else {
+			m.logger.Info("Status update triggered by self-healing (no new state or command from API)")
+		}
+		if err := m.sendConsolidationFeedback(apiError, consolidationResult, isUpdate); err != nil {
+			m.logger.Errorf("Failed to send consolidation feedback: %v", err)
+		}
 	} else {
-		m.logger.Info("Status update triggered by self-healing (no new state or command from API)")
-	}
-	if err := m.sendConsolidationFeedback(apiError, consolidationResult, isUpdate); err != nil {
-		m.logger.Errorf("Failed to send consolidation feedback: %v", err)
+		m.logger.Info("No changes made and no new state received, skipping feedback")
 	}
 
 	m.logger.Info("Status update cycle completed")
@@ -349,13 +354,16 @@ func (m *Manager) performStateConsolidation() *ConsolidationResult {
 	if m.environmentManager != nil {
 		m.logger.Info("Performing environment state consolidation")
 		desiredEnv := desiredState.Env
-		if err := m.environmentManager.SyncSystemEnvironment(desiredEnv); err != nil {
+		if _, changesMade, err := m.environmentManager.SyncSystemEnvironment(desiredEnv); err != nil {
 			result.Errors["environment"] = err
 			m.logger.Errorf("Environment state consolidation failed: %v", err)
 		} else {
-			// Environment manager doesn't return changes, so we assume operations were performed if no error
-			result.OperationsPerformed = true
-			m.logger.Info("Environment state consolidation completed successfully")
+			if changesMade {
+				result.OperationsPerformed = true
+				m.logger.Info("Environment state consolidation completed successfully with changes")
+			} else {
+				m.logger.Info("Environment state consolidation completed successfully - no changes needed")
+			}
 		}
 	}
 
@@ -364,13 +372,13 @@ func (m *Manager) performStateConsolidation() *ConsolidationResult {
 		m.logger.Info("Performing system package state consolidation")
 		currentPackages := m.currentState.Packages
 		desiredPackages := desiredState.Packages
-		if changes, err := m.systemPackageManager.StateConsolidation(currentPackages, desiredPackages); err != nil {
+		if _, changesMade, err := m.systemPackageManager.StateConsolidation(currentPackages, desiredPackages); err != nil {
 			result.Errors["system_packages"] = err
 			m.logger.Errorf("System package state consolidation failed: %v", err)
 		} else {
-			if len(changes) > 0 {
+			if changesMade {
 				result.OperationsPerformed = true
-				m.logger.Infof("System package state consolidation completed successfully with %d changes", len(changes))
+				m.logger.Info("System package state consolidation completed successfully with changes")
 			} else {
 				m.logger.Info("System package state consolidation completed successfully - no changes needed")
 			}
@@ -382,13 +390,13 @@ func (m *Manager) performStateConsolidation() *ConsolidationResult {
 		m.logger.Info("Performing custom package state consolidation")
 		currentCustomPackages := m.currentState.CustomPackages
 		desiredCustomPackages := desiredState.CustomPackages
-		if changes, err := m.customPackageManager.StateConsolidation(currentCustomPackages, desiredCustomPackages); err != nil {
+		if _, changesMade, err := m.customPackageManager.StateConsolidation(currentCustomPackages, desiredCustomPackages); err != nil {
 			result.Errors["custom_packages"] = err
 			m.logger.Errorf("Custom package state consolidation failed: %v", err)
 		} else {
-			if len(changes) > 0 {
+			if changesMade {
 				result.OperationsPerformed = true
-				m.logger.Infof("Custom package state consolidation completed successfully with %d changes", len(changes))
+				m.logger.Info("Custom package state consolidation completed successfully with changes")
 			} else {
 				m.logger.Info("Custom package state consolidation completed successfully - no changes needed")
 			}
@@ -400,13 +408,13 @@ func (m *Manager) performStateConsolidation() *ConsolidationResult {
 		m.logger.Info("Performing container state consolidation")
 		currentContainers := m.currentState.Containers
 		desiredContainers := desiredState.Containers
-		if changes, err := m.containerManager.StateConsolidation(currentContainers, desiredContainers); err != nil {
+		if _, changesMade, err := m.containerManager.StateConsolidation(currentContainers, desiredContainers); err != nil {
 			result.Errors["containers"] = err
 			m.logger.Errorf("Container state consolidation failed: %v", err)
 		} else {
-			if len(changes) > 0 {
+			if changesMade {
 				result.OperationsPerformed = true
-				m.logger.Infof("Container state consolidation completed successfully with %d changes", len(changes))
+				m.logger.Info("Container state consolidation completed successfully with changes")
 			} else {
 				m.logger.Info("Container state consolidation completed successfully - no changes needed")
 			}

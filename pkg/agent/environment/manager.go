@@ -180,24 +180,39 @@ func (m *Manager) Update(variables map[string]string) error {
 }
 
 // SyncSystemEnvironment synchronizes system-wide environment variables
-func (m *Manager) SyncSystemEnvironment(envVars map[string]string) error {
+func (m *Manager) SyncSystemEnvironment(envVars map[string]string) (map[string]string, bool, error) {
 	if len(envVars) == 0 {
 		m.logger.Info("No environment variables to sync")
-		return nil
+		return envVars, false, nil
 	}
 
 	m.logger.Info("Synchronizing system-wide environment variables")
 
+	// Check if changes are needed by comparing with current state
+	currentEnv, err := m.GetCurrentSystemEnvironment()
+	if err != nil {
+		m.logger.Errorf("Failed to get current environment: %v", err)
+		// Continue with sync even if we can't get current state
+	}
+
+	changesMade := false
+	for key, desiredValue := range envVars {
+		if currentValue, exists := currentEnv[key]; !exists || currentValue != desiredValue {
+			changesMade = true
+			break
+		}
+	}
+
 	// Update /etc/environment for system-wide variables
 	if err := m.updateEtcEnvironment(envVars); err != nil {
 		m.logger.Errorf("Failed to update /etc/environment: %v", err)
-		return err
+		return envVars, changesMade, err
 	}
 
 	// Update /etc/profile.d/ for shell sessions
 	if err := m.updateProfileD(envVars); err != nil {
 		m.logger.Errorf("Failed to update profile.d: %v", err)
-		return err
+		return envVars, changesMade, err
 	}
 
 	// Update systemd environment for services
@@ -206,8 +221,12 @@ func (m *Manager) SyncSystemEnvironment(envVars map[string]string) error {
 		// Don't return error as this is not critical
 	}
 
-	m.logger.Info("System environment variables synchronized successfully")
-	return nil
+	if changesMade {
+		m.logger.Info("System environment variables synchronized successfully with changes")
+	} else {
+		m.logger.Info("System environment variables synchronized successfully - no changes needed")
+	}
+	return envVars, changesMade, nil
 }
 
 // GetCurrentSystemEnvironment retrieves current system environment variables
