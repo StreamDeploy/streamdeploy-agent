@@ -189,7 +189,7 @@ func (m *Manager) Create(packages []string) error {
 // 2. Applies Delete or Install operations
 // 3. Reports errors if failed
 // 4. Returns the updated current state based on what succeeded
-func (m *Manager) StateConsolidation(currentState, desiredState []string) ([]string, error) {
+func (m *Manager) StateConsolidation(currentState, desiredState []string) ([]string, bool, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
@@ -201,7 +201,8 @@ func (m *Manager) StateConsolidation(currentState, desiredState []string) ([]str
 	m.logger.Infof("State comparison: %d to destroy, %d to create", len(toDestroy), len(toCreate))
 
 	// Step 2: Apply changes if needed
-	if len(toDestroy) > 0 || len(toCreate) > 0 {
+	changesMade := len(toDestroy) > 0 || len(toCreate) > 0
+	if changesMade {
 		m.logger.Info("Applying package changes")
 
 		// Apply changes in the correct order: destroy first, then create
@@ -209,7 +210,7 @@ func (m *Manager) StateConsolidation(currentState, desiredState []string) ([]str
 			m.logger.Errorf("Failed to apply package changes: %v", err)
 			// Return updated current state even if changes failed, as some operations might have succeeded
 			updatedState := m.updateCurrentStateAfterChanges(currentState, toDestroy, toCreate)
-			return updatedState, err
+			return updatedState, changesMade, err
 		}
 
 		m.logger.Info("Package changes applied successfully")
@@ -221,5 +222,5 @@ func (m *Manager) StateConsolidation(currentState, desiredState []string) ([]str
 	updatedCurrentState := m.updateCurrentStateAfterChanges(currentState, toDestroy, toCreate)
 	m.logger.Infof("State consolidation completed. Final state: %d packages", len(updatedCurrentState))
 
-	return updatedCurrentState, nil
+	return updatedCurrentState, changesMade, nil
 }

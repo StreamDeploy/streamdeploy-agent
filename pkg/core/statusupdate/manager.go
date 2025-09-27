@@ -213,7 +213,7 @@ func (m *Manager) performStatusUpdateCycle() error {
 
 	// Step 6: Collect all errors and send feedback to backend
 	m.logger.Debug("Step 6: Collecting results and sending feedback")
-	// Only send feedback if changes were made or new state was received
+	// Only send feedback if there are actual changes made or new state was received
 	if hasNewState || consolidationResult.OperationsPerformed {
 		// Determine if this was triggered by an API update (only if API succeeded and provided new state/command)
 		// If API failed or returned empty state ({}), it's considered selfheal
