@@ -356,6 +356,7 @@ func (m *Manager) performStateConsolidation() *ConsolidationResult {
 		desiredEnv := desiredState.Env
 		if _, changesMade, err := m.environmentManager.SyncSystemEnvironment(desiredEnv); err != nil {
 			result.Errors["environment"] = err
+			result.OperationsPerformed = true // Mark as performed even if failed
 			m.logger.Errorf("Environment state consolidation failed: %v", err)
 		} else {
 			if changesMade {
@@ -374,6 +375,7 @@ func (m *Manager) performStateConsolidation() *ConsolidationResult {
 		desiredPackages := desiredState.Packages
 		if _, changesMade, err := m.systemPackageManager.StateConsolidation(currentPackages, desiredPackages); err != nil {
 			result.Errors["system_packages"] = err
+			result.OperationsPerformed = true // Mark as performed even if failed
 			m.logger.Errorf("System package state consolidation failed: %v", err)
 		} else {
 			if changesMade {
@@ -392,6 +394,7 @@ func (m *Manager) performStateConsolidation() *ConsolidationResult {
 		desiredCustomPackages := desiredState.CustomPackages
 		if _, changesMade, err := m.customPackageManager.StateConsolidation(currentCustomPackages, desiredCustomPackages); err != nil {
 			result.Errors["custom_packages"] = err
+			result.OperationsPerformed = true // Mark as performed even if failed
 			m.logger.Errorf("Custom package state consolidation failed: %v", err)
 		} else {
 			if changesMade {
@@ -410,6 +413,7 @@ func (m *Manager) performStateConsolidation() *ConsolidationResult {
 		desiredContainers := desiredState.Containers
 		if _, changesMade, err := m.containerManager.StateConsolidation(currentContainers, desiredContainers); err != nil {
 			result.Errors["containers"] = err
+			result.OperationsPerformed = true // Mark as performed even if failed
 			m.logger.Errorf("Container state consolidation failed: %v", err)
 		} else {
 			if changesMade {
@@ -425,11 +429,11 @@ func (m *Manager) performStateConsolidation() *ConsolidationResult {
 }
 
 // sendConsolidationFeedback sends feedback about the consolidation results to backend
-// Only sends feedback if operations were actually performed
+// Sends feedback if operations were performed OR if this was triggered by an API update
 func (m *Manager) sendConsolidationFeedback(apiError error, consolidationResult *ConsolidationResult, isUpdate bool) error {
-	// Only send feedback if operations were actually performed
-	if !consolidationResult.OperationsPerformed {
-		m.logger.Debug("No operations were performed, no feedback needed")
+	// Send feedback if operations were performed OR if this was an API update (even with no changes)
+	if !consolidationResult.OperationsPerformed && !isUpdate {
+		m.logger.Debug("No operations were performed and not an API update, no feedback needed")
 		return nil
 	}
 

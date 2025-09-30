@@ -214,52 +214,19 @@ func (i *Installer) checkRoot() bool {
 }
 
 func (i *Installer) getBootstrapToken() bool {
-	// Check command line argument (skip first arg which is the binary name)
-	if len(os.Args) >= 2 && len(os.Args[1]) > 0 && !strings.HasPrefix(os.Args[1], "/") {
-		i.bootstrapToken = os.Args[1]
-		i.logger.Info("Bootstrap token provided via command line")
-		return true
-	}
-
-	// Check environment variable
-	if token := os.Getenv("SD_BOOTSTRAP_TOKEN"); len(token) > 0 {
+	token := GetBootstrapToken()
+	if token != "" {
 		i.bootstrapToken = token
-		i.logger.Info("Bootstrap token found in environment variable")
+		i.logger.Info("Bootstrap token found")
 		return true
 	}
-
 	return false
 }
 
 func (i *Installer) extractDeviceIDFromJWT() error {
-	// JWT has 3 parts separated by dots: header.payload.signature
-	parts := strings.Split(i.bootstrapToken, ".")
-	if len(parts) != 3 {
-		return fmt.Errorf("invalid JWT format")
-	}
-
-	payload := parts[1]
-
-	// Add padding if needed for base64 decoding
-	for len(payload)%4 != 0 {
-		payload += "="
-	}
-
-	// Decode base64 payload
-	decoded, err := base64.StdEncoding.DecodeString(payload)
+	deviceID, err := ExtractDeviceIDFromJWT(i.bootstrapToken)
 	if err != nil {
-		return fmt.Errorf("failed to decode JWT payload: %w", err)
-	}
-
-	// Parse JSON to extract device_id
-	var claims map[string]interface{}
-	if err := json.Unmarshal(decoded, &claims); err != nil {
-		return fmt.Errorf("failed to parse JWT claims: %w", err)
-	}
-
-	deviceID, ok := claims["device_id"].(string)
-	if !ok {
-		return fmt.Errorf("device_id not found in JWT claims")
+		return err
 	}
 
 	i.deviceID = deviceID
@@ -270,32 +237,20 @@ func (i *Installer) extractDeviceIDFromJWT() error {
 func (i *Installer) detectSystem() error {
 	i.logger.Info("Detecting system information...")
 
-	// Detect architecture and map to StreamDeploy naming convention
-	goArch := runtime.GOARCH
-	switch goArch {
-	case "amd64":
-		i.architecture = "amd64"
-	case "arm64":
-		i.architecture = "arm64"
-	case "arm":
-		i.architecture = i.detectARMVariant()
-	case "riscv64":
-		i.architecture = "riscv64"
-	default:
-		return fmt.Errorf("unsupported architecture: %s", goArch)
-	}
-
-	// Detect OS from /etc/os-release
-	osInfo, err := i.parseOSRelease()
+	// Use the modular system detection functions
+	systemInfo, err := DetectSystemInfo()
 	if err != nil {
-		return fmt.Errorf("failed to parse /etc/os-release: %w", err)
+		return fmt.Errorf("failed to detect system information: %w", err)
 	}
-
-	i.osName = osInfo["ID"]
-	i.osVersion = osInfo["VERSION_ID"]
 
 	// Detect machine type
-	i.machineType = i.detectMachineType()
+	machineType := DetectMachineType()
+
+	// Set the detected values
+	i.osName = systemInfo.OSName
+	i.osVersion = systemInfo.OSVersion
+	i.architecture = systemInfo.Architecture
+	i.machineType = machineType
 
 	i.logger.Infof("Detected OS: %s %s", i.osName, i.osVersion)
 	i.logger.Infof("Architecture: %s", i.architecture)
@@ -308,22 +263,22 @@ func (i *Installer) installRequiredPackages() error {
 	i.logger.Info("Installing required packages...")
 
 	// Check if apt is available (Ubuntu/Debian)
-	if i.commandExists("apt") {
+	if CommandExists("apt") {
 		return i.installPackagesWithApt()
 	}
 
 	// Check if yum is available (RHEL/CentOS)
-	if i.commandExists("yum") {
+	if CommandExists("yum") {
 		return i.installPackagesWithYum()
 	}
 
 	// Check if dnf is available (Fedora/newer RHEL)
-	if i.commandExists("dnf") {
+	if CommandExists("dnf") {
 		return i.installPackagesWithDnf()
 	}
 
 	// Check if apk is available (Alpine)
-	if i.commandExists("apk") {
+	if CommandExists("apk") {
 		return i.installPackagesWithApk()
 	}
 
@@ -335,7 +290,7 @@ func (i *Installer) installPackagesWithApt() error {
 	i.logger.Info("Installing packages using apt...")
 
 	// Update package list first
-	if err := i.runCommand("apt update"); err != nil {
+	if err := RunShellCommand("apt update"); err != nil {
 		i.logger.Infof("Failed to update package list: %v", err)
 	}
 
@@ -343,7 +298,7 @@ func (i *Installer) installPackagesWithApt() error {
 	packages := strings.Join(RequiredPackages, " ")
 	command := fmt.Sprintf("apt install -y %s", packages)
 
-	if err := i.runCommand(command); err != nil {
+	if err := RunShellCommand(command); err != nil {
 		return fmt.Errorf("failed to install required packages: %w", err)
 	}
 
@@ -357,7 +312,7 @@ func (i *Installer) installPackagesWithYum() error {
 	packages := strings.Join(RequiredPackages, " ")
 	command := fmt.Sprintf("yum install -y %s", packages)
 
-	if err := i.runCommand(command); err != nil {
+	if err := RunShellCommand(command); err != nil {
 		return fmt.Errorf("failed to install required packages: %w", err)
 	}
 
@@ -371,7 +326,7 @@ func (i *Installer) installPackagesWithDnf() error {
 	packages := strings.Join(RequiredPackages, " ")
 	command := fmt.Sprintf("dnf install -y %s", packages)
 
-	if err := i.runCommand(command); err != nil {
+	if err := RunShellCommand(command); err != nil {
 		return fmt.Errorf("failed to install required packages: %w", err)
 	}
 
@@ -385,288 +340,12 @@ func (i *Installer) installPackagesWithApk() error {
 	packages := strings.Join(RequiredPackages, " ")
 	command := fmt.Sprintf("apk add %s", packages)
 
-	if err := i.runCommand(command); err != nil {
+	if err := RunShellCommand(command); err != nil {
 		return fmt.Errorf("failed to install required packages: %w", err)
 	}
 
 	i.logger.Info("Required packages installed successfully")
 	return nil
-}
-
-func (i *Installer) detectARMVariant() string {
-	// Try to detect ARM variant by checking /proc/cpuinfo
-	if cpuInfo, err := os.ReadFile("/proc/cpuinfo"); err == nil {
-		cpuInfoStr := string(cpuInfo)
-
-		// Look for ARM architecture version
-		if strings.Contains(cpuInfoStr, "ARMv6") {
-			return "armv6"
-		}
-		if strings.Contains(cpuInfoStr, "ARMv7") {
-			return "armv7"
-		}
-
-		// Check for specific CPU features that indicate ARMv7
-		if strings.Contains(cpuInfoStr, "vfpv3") || strings.Contains(cpuInfoStr, "neon") {
-			return "armv7"
-		}
-	}
-
-	// Default to armv7 if we can't determine the specific variant
-	return "armv7"
-}
-
-func (i *Installer) detectMachineType() string {
-	// Try to detect from device tree first (NVIDIA Jetson devices)
-	if model, err := os.ReadFile("/sys/firmware/devicetree/base/model"); err == nil {
-		modelStr := strings.TrimSpace(string(model))
-		if strings.Contains(modelStr, "Jetson") {
-			i.logger.Infof("Detected NVIDIA device: %s", modelStr)
-			return modelStr
-		}
-		if strings.Contains(modelStr, "AGX Orin") || strings.Contains(modelStr, "Orin") {
-			return "NVIDIA Jetson AGX Orin"
-		}
-		if strings.Contains(modelStr, "Xavier") {
-			return "NVIDIA Jetson Xavier"
-		}
-		if strings.Contains(modelStr, "Nano") {
-			return "NVIDIA Jetson Nano"
-		}
-	}
-
-	// Try to detect Raspberry Pi from /proc/cpuinfo
-	if cpuInfo, err := os.ReadFile("/proc/cpuinfo"); err == nil {
-		cpuInfoStr := string(cpuInfo)
-
-		// Check for Raspberry Pi indicators
-		if strings.Contains(cpuInfoStr, "Raspberry Pi") {
-			// Try to extract model from cpuinfo
-			lines := strings.Split(cpuInfoStr, "\n")
-			for _, line := range lines {
-				if strings.Contains(line, "Model") && strings.Contains(line, "Raspberry Pi") {
-					model := strings.TrimSpace(strings.Split(line, ":")[1])
-					i.logger.Infof("Detected Raspberry Pi: %s", model)
-					return model
-				}
-			}
-			return "Raspberry Pi"
-		}
-
-		// Check for other ARM-based single board computers
-		if strings.Contains(cpuInfoStr, "Hardware") {
-			lines := strings.Split(cpuInfoStr, "\n")
-			for _, line := range lines {
-				if strings.Contains(line, "Hardware") && strings.Contains(line, ":") {
-					hardware := strings.TrimSpace(strings.Split(line, ":")[1])
-					if strings.Contains(hardware, "ODROID") {
-						return "ODROID " + hardware
-					}
-					if strings.Contains(hardware, "Banana Pi") || strings.Contains(hardware, "BananaPro") {
-						return hardware
-					}
-					if strings.Contains(hardware, "Orange Pi") {
-						return hardware
-					}
-					if strings.Contains(hardware, "Rockchip") {
-						return "Rockchip " + hardware
-					}
-				}
-			}
-		}
-	}
-
-	// Check for RISC-V boards
-	if i.architecture == "riscv64" {
-		// Try to detect from device tree
-		if model, err := os.ReadFile("/sys/firmware/devicetree/base/model"); err == nil {
-			modelStr := strings.TrimSpace(string(model))
-			if strings.Contains(modelStr, "VisionFive") {
-				return "StarFive VisionFive"
-			}
-			if strings.Contains(modelStr, "HiFive") {
-				return "SiFive HiFive"
-			}
-			if strings.Contains(modelStr, "Pine64") || strings.Contains(modelStr, "Pine") {
-				return "Pine64 " + modelStr
-			}
-			if strings.Contains(modelStr, "Unmatched") {
-				return "SiFive HiFive Unmatched"
-			}
-			if strings.Contains(modelStr, "Allwinner") {
-				return "Allwinner RISC-V " + modelStr
-			}
-			return modelStr
-		}
-
-		// Check /proc/cpuinfo for RISC-V specific information
-		if cpuInfo, err := os.ReadFile("/proc/cpuinfo"); err == nil {
-			cpuInfoStr := string(cpuInfo)
-			if strings.Contains(cpuInfoStr, "Hardware") {
-				lines := strings.Split(cpuInfoStr, "\n")
-				for _, line := range lines {
-					if strings.Contains(line, "Hardware") && strings.Contains(line, ":") {
-						hardware := strings.TrimSpace(strings.Split(line, ":")[1])
-						if strings.Contains(hardware, "VisionFive") {
-							return "StarFive VisionFive"
-						}
-						if strings.Contains(hardware, "HiFive") {
-							return "SiFive HiFive"
-						}
-						if strings.Contains(hardware, "Pine64") {
-							return "Pine64 " + hardware
-						}
-						if strings.Contains(hardware, "Unmatched") {
-							return "SiFive HiFive Unmatched"
-						}
-						if strings.Contains(hardware, "Allwinner") {
-							return "Allwinner RISC-V " + hardware
-						}
-					}
-				}
-			}
-		}
-
-		return "Generic RISC-V 64"
-	}
-
-	// Check for ARM64-based devices
-	if i.architecture == "arm64" {
-		// Check if it's a virtual machine
-		if hypervisor, err := os.ReadFile("/sys/class/dmi/id/sys_vendor"); err == nil {
-			vendor := strings.TrimSpace(string(hypervisor))
-			if strings.Contains(vendor, "QEMU") || strings.Contains(vendor, "VMware") || strings.Contains(vendor, "VirtualBox") {
-				return "Virtual Machine (" + vendor + ")"
-			}
-		}
-
-		// Check for specific ARM64 devices from DMI
-		if product, err := os.ReadFile("/sys/class/dmi/id/product_name"); err == nil {
-			productStr := strings.TrimSpace(string(product))
-			if strings.Contains(productStr, "Raspberry Pi") {
-				return "Raspberry Pi (" + productStr + ")"
-			}
-			if strings.Contains(productStr, "Orange Pi") {
-				return "Orange Pi (" + productStr + ")"
-			}
-			if strings.Contains(productStr, "Banana Pi") {
-				return "Banana Pi (" + productStr + ")"
-			}
-			if strings.Contains(productStr, "Rockchip") {
-				return "Rockchip (" + productStr + ")"
-			}
-		}
-
-		// Check for ARM64-specific hardware from cpuinfo
-		if cpuInfo, err := os.ReadFile("/proc/cpuinfo"); err == nil {
-			cpuInfoStr := string(cpuInfo)
-
-			// Look for specific ARM64 hardware identifiers
-			if strings.Contains(cpuInfoStr, "Hardware") {
-				lines := strings.Split(cpuInfoStr, "\n")
-				for _, line := range lines {
-					if strings.Contains(line, "Hardware") && strings.Contains(line, ":") {
-						hardware := strings.TrimSpace(strings.Split(line, ":")[1])
-						if strings.Contains(hardware, "Raspberry Pi") {
-							return "Raspberry Pi " + hardware
-						}
-						if strings.Contains(hardware, "Orange Pi") {
-							return "Orange Pi " + hardware
-						}
-						if strings.Contains(hardware, "Banana Pi") {
-							return "Banana Pi " + hardware
-						}
-						if strings.Contains(hardware, "Rockchip") {
-							return "Rockchip " + hardware
-						}
-						if strings.Contains(hardware, "Allwinner") {
-							return "Allwinner " + hardware
-						}
-						if strings.Contains(hardware, "Amlogic") {
-							return "Amlogic " + hardware
-						}
-						if strings.Contains(hardware, "Broadcom") {
-							return "Broadcom " + hardware
-						}
-					}
-				}
-			}
-
-			// Check for specific CPU features that might indicate device type
-			if strings.Contains(cpuInfoStr, "BCM2711") {
-				return "Raspberry Pi 4 Model B"
-			}
-			if strings.Contains(cpuInfoStr, "BCM2835") {
-				return "Raspberry Pi 1/Zero"
-			}
-			if strings.Contains(cpuInfoStr, "BCM2836") {
-				return "Raspberry Pi 2"
-			}
-			if strings.Contains(cpuInfoStr, "BCM2837") {
-				return "Raspberry Pi 3"
-			}
-		}
-
-		return "Generic ARM64"
-	}
-
-	// Check for Intel NUC or other x86-based devices
-	if i.architecture == "amd64" || i.architecture == "x86_64" {
-		// Check if it's a virtual machine
-		if hypervisor, err := os.ReadFile("/sys/class/dmi/id/sys_vendor"); err == nil {
-			vendor := strings.TrimSpace(string(hypervisor))
-			if strings.Contains(vendor, "QEMU") || strings.Contains(vendor, "VMware") || strings.Contains(vendor, "VirtualBox") {
-				return "Virtual Machine (" + vendor + ")"
-			}
-		}
-
-		// Check for specific x86 devices
-		if product, err := os.ReadFile("/sys/class/dmi/id/product_name"); err == nil {
-			productStr := strings.TrimSpace(string(product))
-			if strings.Contains(productStr, "NUC") {
-				return "Intel NUC (" + productStr + ")"
-			}
-			if strings.Contains(productStr, "Raspberry Pi") {
-				return "Raspberry Pi (" + productStr + ")"
-			}
-		}
-
-		return "Generic x86_64"
-	}
-
-	// Default fallback - never return empty or "Unknown"
-	if i.architecture != "" {
-		return "Generic " + i.architecture
-	}
-	return "Generic"
-}
-
-func (i *Installer) parseOSRelease() (map[string]string, error) {
-	file, err := os.Open("/etc/os-release")
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	osInfo := make(map[string]string)
-	scanner := bufio.NewScanner(file)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.Contains(line, "=") {
-			parts := strings.SplitN(line, "=", 2)
-			key := parts[0]
-			value := strings.Trim(parts[1], "\"")
-			osInfo[key] = value
-		}
-	}
-
-	return osInfo, scanner.Err()
-}
-
-func (i *Installer) commandExists(command string) bool {
-	_, err := exec.LookPath(command)
-	return err == nil
 }
 
 func (i *Installer) ensureAgentBinary() error {
@@ -742,7 +421,7 @@ func (i *Installer) createConfig() error {
 	}
 
 	deviceConfigPath := filepath.Join(ConfigDir, "agent.json")
-	if err := i.writeJSONFile(deviceConfigPath, deviceConfig); err != nil {
+	if err := WriteJSONFile(deviceConfigPath, deviceConfig); err != nil {
 		return fmt.Errorf("failed to write device config: %w", err)
 	}
 
@@ -750,21 +429,12 @@ func (i *Installer) createConfig() error {
 	stateConfig := DefaultStateConfig
 
 	stateConfigPath := filepath.Join(ConfigDir, "state.json")
-	if err := i.writeJSONFile(stateConfigPath, stateConfig); err != nil {
+	if err := WriteJSONFile(stateConfigPath, stateConfig); err != nil {
 		return fmt.Errorf("failed to write state config: %w", err)
 	}
 
 	i.logger.Info("Configuration created successfully")
 	return nil
-}
-
-func (i *Installer) writeJSONFile(path string, data interface{}) error {
-	jsonData, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(path, jsonData, 0644)
 }
 
 func (i *Installer) performCertificateExchange() error {
@@ -995,7 +665,7 @@ func (i *Installer) createSystemdService() error {
 func (i *Installer) enableAndStartService() error {
 	i.logger.Info("Enabling and starting StreamDeploy agent service...")
 
-	if !i.commandExists("systemctl") {
+	if !CommandExists("systemctl") {
 		i.logger.Info("systemctl not available, skipping service start")
 		return nil
 	}
@@ -1007,22 +677,13 @@ func (i *Installer) enableAndStartService() error {
 	}
 
 	for _, cmd := range commands {
-		if err := i.runCommand(cmd); err != nil {
+		if err := RunShellCommand(cmd); err != nil {
 			i.logger.Errorf("Failed to run command '%s': %v", cmd, err)
 		}
 	}
 
 	i.logger.Info("StreamDeploy agent service enabled and started")
 	return nil
-}
-
-func (i *Installer) runCommand(command string) error {
-	cmd := exec.Command("sh", "-c", command)
-
-	// Set working directory to root to avoid getcwd() issues
-	cmd.Dir = "/"
-
-	return cmd.Run()
 }
 
 // cleanupAndExit performs cleanup after successful installation and exits
@@ -1060,7 +721,7 @@ func (i *Installer) cleanupAndExit() error {
 
 // verifyServiceRunning checks that the systemd service is running properly
 func (i *Installer) verifyServiceRunning() error {
-	if !i.commandExists("systemctl") {
+	if !CommandExists("systemctl") {
 		i.logger.Info("systemctl not available, skipping service verification")
 		return nil
 	}
@@ -1173,6 +834,9 @@ func DetectSystemInfo() (*SystemInfo, error) {
 
 	// Detect architecture
 	arch := DetectArchitecture()
+	if arch == "" {
+		return nil, fmt.Errorf("unsupported architecture: %s", runtime.GOARCH)
+	}
 
 	return &SystemInfo{
 		OSName:       osInfo["ID"],
@@ -1183,15 +847,17 @@ func DetectSystemInfo() (*SystemInfo, error) {
 
 // ParseOSRelease parses /etc/os-release file (public version)
 func ParseOSRelease() (map[string]string, error) {
-	data, err := os.ReadFile("/etc/os-release")
+	file, err := os.Open("/etc/os-release")
 	if err != nil {
 		return nil, err
 	}
+	defer file.Close()
 
 	osInfo := make(map[string]string)
-	lines := strings.Split(string(data), "\n")
+	scanner := bufio.NewScanner(file)
 
-	for _, line := range lines {
+	for scanner.Scan() {
+		line := scanner.Text()
 		if strings.Contains(line, "=") {
 			parts := strings.SplitN(line, "=", 2)
 			key := parts[0]
@@ -1200,7 +866,7 @@ func ParseOSRelease() (map[string]string, error) {
 		}
 	}
 
-	return osInfo, nil
+	return osInfo, scanner.Err()
 }
 
 // DetectArchitecture detects system architecture (public version)
@@ -1216,7 +882,9 @@ func DetectArchitecture() string {
 	case "riscv64":
 		return "riscv64"
 	default:
-		return runtime.GOARCH
+		// Return error for unsupported architecture to match full installer behavior
+		// This will cause DetectSystemInfo to fail, which is the correct behavior
+		return ""
 	}
 }
 
@@ -1244,6 +912,233 @@ func DetectARMVariant() string {
 	return "armv7"
 }
 
+// DetectMachineType detects machine type (public version)
+func DetectMachineType() string {
+	// Detect architecture first
+	arch := DetectArchitecture()
+
+	// Try to detect from device tree first (NVIDIA Jetson devices)
+	if model, err := os.ReadFile("/sys/firmware/devicetree/base/model"); err == nil {
+		modelStr := strings.TrimSpace(string(model))
+		if strings.Contains(modelStr, "Jetson") {
+			return modelStr
+		}
+		if strings.Contains(modelStr, "AGX Orin") || strings.Contains(modelStr, "Orin") {
+			return "NVIDIA Jetson AGX Orin"
+		}
+		if strings.Contains(modelStr, "Xavier") {
+			return "NVIDIA Jetson Xavier"
+		}
+		if strings.Contains(modelStr, "Nano") {
+			return "NVIDIA Jetson Nano"
+		}
+	}
+
+	// Try to detect Raspberry Pi from /proc/cpuinfo
+	if cpuInfo, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+		cpuInfoStr := string(cpuInfo)
+
+		// Check for Raspberry Pi indicators
+		if strings.Contains(cpuInfoStr, "Raspberry Pi") {
+			// Try to extract model from cpuinfo
+			lines := strings.Split(cpuInfoStr, "\n")
+			for _, line := range lines {
+				if strings.Contains(line, "Model") && strings.Contains(line, "Raspberry Pi") {
+					model := strings.TrimSpace(strings.Split(line, ":")[1])
+					return model
+				}
+			}
+			return "Raspberry Pi"
+		}
+
+		// Check for other ARM-based single board computers
+		if strings.Contains(cpuInfoStr, "Hardware") {
+			lines := strings.Split(cpuInfoStr, "\n")
+			for _, line := range lines {
+				if strings.Contains(line, "Hardware") && strings.Contains(line, ":") {
+					hardware := strings.TrimSpace(strings.Split(line, ":")[1])
+					if strings.Contains(hardware, "ODROID") {
+						return "ODROID " + hardware
+					}
+					if strings.Contains(hardware, "Banana Pi") || strings.Contains(hardware, "BananaPro") {
+						return hardware
+					}
+					if strings.Contains(hardware, "Orange Pi") {
+						return hardware
+					}
+					if strings.Contains(hardware, "Rockchip") {
+						return "Rockchip " + hardware
+					}
+				}
+			}
+		}
+	}
+
+	// Check for RISC-V boards
+	if arch == "riscv64" {
+		// Try to detect from device tree
+		if model, err := os.ReadFile("/sys/firmware/devicetree/base/model"); err == nil {
+			modelStr := strings.TrimSpace(string(model))
+			if strings.Contains(modelStr, "VisionFive") {
+				return "StarFive VisionFive"
+			}
+			if strings.Contains(modelStr, "HiFive") {
+				return "SiFive HiFive"
+			}
+			if strings.Contains(modelStr, "Pine64") || strings.Contains(modelStr, "Pine") {
+				return "Pine64 " + modelStr
+			}
+			if strings.Contains(modelStr, "Unmatched") {
+				return "SiFive HiFive Unmatched"
+			}
+			if strings.Contains(modelStr, "Allwinner") {
+				return "Allwinner RISC-V " + modelStr
+			}
+			return modelStr
+		}
+
+		// Check /proc/cpuinfo for RISC-V specific information
+		if cpuInfo, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+			cpuInfoStr := string(cpuInfo)
+			if strings.Contains(cpuInfoStr, "Hardware") {
+				lines := strings.Split(cpuInfoStr, "\n")
+				for _, line := range lines {
+					if strings.Contains(line, "Hardware") && strings.Contains(line, ":") {
+						hardware := strings.TrimSpace(strings.Split(line, ":")[1])
+						if strings.Contains(hardware, "VisionFive") {
+							return "StarFive VisionFive"
+						}
+						if strings.Contains(hardware, "HiFive") {
+							return "SiFive HiFive"
+						}
+						if strings.Contains(hardware, "Pine64") {
+							return "Pine64 " + hardware
+						}
+						if strings.Contains(hardware, "Unmatched") {
+							return "SiFive HiFive Unmatched"
+						}
+						if strings.Contains(hardware, "Allwinner") {
+							return "Allwinner RISC-V " + hardware
+						}
+					}
+				}
+			}
+		}
+
+		return "Generic RISC-V 64"
+	}
+
+	// Check for ARM64-based devices
+	if arch == "arm64" {
+		// Check if it's a virtual machine
+		if hypervisor, err := os.ReadFile("/sys/class/dmi/id/sys_vendor"); err == nil {
+			vendor := strings.TrimSpace(string(hypervisor))
+			if strings.Contains(vendor, "QEMU") || strings.Contains(vendor, "VMware") || strings.Contains(vendor, "VirtualBox") {
+				return "Virtual Machine (" + vendor + ")"
+			}
+		}
+
+		// Check for specific ARM64 devices from DMI
+		if product, err := os.ReadFile("/sys/class/dmi/id/product_name"); err == nil {
+			productStr := strings.TrimSpace(string(product))
+			if strings.Contains(productStr, "Raspberry Pi") {
+				return "Raspberry Pi (" + productStr + ")"
+			}
+			if strings.Contains(productStr, "Orange Pi") {
+				return "Orange Pi (" + productStr + ")"
+			}
+			if strings.Contains(productStr, "Banana Pi") {
+				return "Banana Pi (" + productStr + ")"
+			}
+			if strings.Contains(productStr, "Rockchip") {
+				return "Rockchip (" + productStr + ")"
+			}
+		}
+
+		// Check for ARM64-specific hardware from cpuinfo
+		if cpuInfo, err := os.ReadFile("/proc/cpuinfo"); err == nil {
+			cpuInfoStr := string(cpuInfo)
+
+			// Look for specific ARM64 hardware identifiers
+			if strings.Contains(cpuInfoStr, "Hardware") {
+				lines := strings.Split(cpuInfoStr, "\n")
+				for _, line := range lines {
+					if strings.Contains(line, "Hardware") && strings.Contains(line, ":") {
+						hardware := strings.TrimSpace(strings.Split(line, ":")[1])
+						if strings.Contains(hardware, "Raspberry Pi") {
+							return "Raspberry Pi " + hardware
+						}
+						if strings.Contains(hardware, "Orange Pi") {
+							return "Orange Pi " + hardware
+						}
+						if strings.Contains(hardware, "Banana Pi") {
+							return "Banana Pi " + hardware
+						}
+						if strings.Contains(hardware, "Rockchip") {
+							return "Rockchip " + hardware
+						}
+						if strings.Contains(hardware, "Allwinner") {
+							return "Allwinner " + hardware
+						}
+						if strings.Contains(hardware, "Amlogic") {
+							return "Amlogic " + hardware
+						}
+						if strings.Contains(hardware, "Broadcom") {
+							return "Broadcom " + hardware
+						}
+					}
+				}
+			}
+
+			// Check for specific CPU features that might indicate device type
+			if strings.Contains(cpuInfoStr, "BCM2711") {
+				return "Raspberry Pi 4 Model B"
+			}
+			if strings.Contains(cpuInfoStr, "BCM2835") {
+				return "Raspberry Pi 1/Zero"
+			}
+			if strings.Contains(cpuInfoStr, "BCM2836") {
+				return "Raspberry Pi 2"
+			}
+			if strings.Contains(cpuInfoStr, "BCM2837") {
+				return "Raspberry Pi 3"
+			}
+		}
+
+		return "Generic ARM64"
+	}
+
+	// Check for Intel NUC or other x86-based devices
+	if arch == "amd64" || arch == "x86_64" {
+		// Check if it's a virtual machine
+		if hypervisor, err := os.ReadFile("/sys/class/dmi/id/sys_vendor"); err == nil {
+			vendor := strings.TrimSpace(string(hypervisor))
+			if strings.Contains(vendor, "QEMU") || strings.Contains(vendor, "VMware") || strings.Contains(vendor, "VirtualBox") {
+				return "Virtual Machine (" + vendor + ")"
+			}
+		}
+
+		// Check for specific x86 devices
+		if product, err := os.ReadFile("/sys/class/dmi/id/product_name"); err == nil {
+			productStr := strings.TrimSpace(string(product))
+			if strings.Contains(productStr, "NUC") {
+				return "Intel NUC (" + productStr + ")"
+			}
+			if strings.Contains(productStr, "Raspberry Pi") {
+				return "Raspberry Pi (" + productStr + ")"
+			}
+		}
+
+		return "Generic x86_64"
+	}
+
+	// Default fallback - never return empty or "Unknown"
+	if arch != "" {
+		return "Generic " + arch
+	}
+	return "Generic"
+}
+
 // WriteJSONFile writes data to JSON file (public version)
 func WriteJSONFile(path string, data interface{}) error {
 	jsonData, err := json.MarshalIndent(data, "", "  ")
@@ -1257,6 +1152,13 @@ func WriteJSONFile(path string, data interface{}) error {
 // RunSystemCommand runs a system command (public version)
 func RunSystemCommand(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
+	cmd.Dir = "/"
+	return cmd.Run()
+}
+
+// RunShellCommand runs a shell command (public version)
+func RunShellCommand(command string) error {
+	cmd := exec.Command("sh", "-c", command)
 	cmd.Dir = "/"
 	return cmd.Run()
 }
@@ -1497,6 +1399,9 @@ func EnsureAgentConfig(logger types.Logger, configPath string) error {
 		return fmt.Errorf("failed to detect system information: %w", err)
 	}
 
+	// Detect machine type
+	machineType := DetectMachineType()
+
 	// Create device config
 	deviceConfig := DeviceConfig{
 		DeviceID:           deviceID,
@@ -1507,6 +1412,7 @@ func EnsureAgentConfig(logger types.Logger, configPath string) error {
 		OSName:             osInfo.OSName,
 		OSVersion:          osInfo.OSVersion,
 		Architecture:       osInfo.Architecture,
+		MachineType:        machineType,
 	}
 
 	// Create config directory
