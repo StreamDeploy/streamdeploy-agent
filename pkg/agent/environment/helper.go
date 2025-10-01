@@ -18,33 +18,42 @@ func (m *Manager) updateEtcEnvironment(envVars map[string]string) error {
 		existingLines = strings.Split(string(data), "\n")
 	}
 
-	// Filter out existing StreamDeploy variables and empty lines
+	// Filter out ALL existing StreamDeploy variables (entire section)
 	var filteredLines []string
+	inStreamDeploySection := false
 	for _, line := range existingLines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			filteredLines = append(filteredLines, line)
-			continue
+		trimmedLine := strings.TrimSpace(line)
+
+		// Check if this is the StreamDeploy section header
+		if trimmedLine == "# StreamDeploy Agent Environment Variables" {
+			inStreamDeploySection = true
+			continue // Skip the header line
 		}
 
-		// Check if this is a StreamDeploy variable
-		isStreamDeployVar := false
-		for key := range envVars {
-			if strings.HasPrefix(line, key+"=") {
-				isStreamDeployVar = true
-				break
+		// If we're in the StreamDeploy section
+		if inStreamDeploySection {
+			// Check if this is a variable line (contains = and is not a comment)
+			if strings.Contains(line, "=") && !strings.HasPrefix(trimmedLine, "#") {
+				continue // Skip StreamDeploy variable lines
+			}
+
+			// Empty line or another comment means end of StreamDeploy section
+			if trimmedLine == "" || strings.HasPrefix(trimmedLine, "#") {
+				inStreamDeploySection = false
+				// Fall through to add this line to filteredLines
 			}
 		}
 
-		if !isStreamDeployVar {
-			filteredLines = append(filteredLines, line)
-		}
+		// Add line to filtered output (we're not in StreamDeploy section or it's the end marker)
+		filteredLines = append(filteredLines, line)
 	}
 
-	// Add StreamDeploy variables
-	filteredLines = append(filteredLines, "# StreamDeploy Agent Environment Variables")
-	for key, value := range envVars {
-		filteredLines = append(filteredLines, fmt.Sprintf("%s=%s", key, value))
+	// Add StreamDeploy variables if any
+	if len(envVars) > 0 {
+		filteredLines = append(filteredLines, "# StreamDeploy Agent Environment Variables")
+		for key, value := range envVars {
+			filteredLines = append(filteredLines, fmt.Sprintf("%s=%s", key, value))
+		}
 	}
 
 	// Write back to file

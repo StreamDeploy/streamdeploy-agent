@@ -84,35 +84,47 @@ func (m *Manager) Destroy(variables map[string]string) error {
 		return nil
 	}
 
-	m.logger.Info("Destroying environment variables")
+	m.logger.Infof("Destroying %d environment variable(s)", len(variables))
 
-	// Remove from /etc/environment
-	if err := m.removeFromEtcEnvironment(); err != nil {
-		m.logger.Errorf("Failed to remove from /etc/environment: %v", err)
-		return fmt.Errorf("failed to remove from /etc/environment: %w", err)
+	// Get current environment variables
+	currentEnv, err := m.GetCurrentSystemEnvironment()
+	if err != nil {
+		m.logger.Errorf("Failed to get current environment: %v", err)
+		// Continue anyway as we still want to try removing the variables
 	}
 
-	// Remove profile.d script
-	profileFile := "/etc/profile.d/streamdeploy.sh"
-	if err := os.Remove(profileFile); err != nil && !os.IsNotExist(err) {
-		m.logger.Errorf("Failed to remove profile script: %v", err)
-		return fmt.Errorf("failed to remove profile script: %w", err)
-	} else {
-		m.logger.Infof("Removed profile script: %s", profileFile)
-	}
-
-	// Remove systemd environment file
-	systemdEnvFile := "/etc/systemd/system.conf.d/streamdeploy-env.conf"
-	if err := os.Remove(systemdEnvFile); err != nil && !os.IsNotExist(err) {
-		m.logger.Errorf("Failed to remove systemd environment file: %v", err)
-		return fmt.Errorf("failed to remove systemd environment file: %w", err)
-	} else {
-		m.logger.Infof("Removed systemd environment file: %s", systemdEnvFile)
-
-		// Reload systemd configuration
-		if cmd := exec.Command("systemctl", "daemon-reload"); cmd.Run() != nil {
-			m.logger.Error("Failed to reload systemd configuration after cleanup")
+	// Calculate remaining variables after removal
+	remainingVars := make(map[string]string)
+	for key, value := range currentEnv {
+		if _, shouldDelete := variables[key]; !shouldDelete {
+			remainingVars[key] = value
 		}
+	}
+
+	m.logger.Infof("After removal, %d variable(s) will remain", len(remainingVars))
+
+	// If no variables remain, remove all files completely
+	if len(remainingVars) == 0 {
+		return m.RemoveSystemEnvironment()
+	}
+
+	// Otherwise, update all files with remaining variables
+	// Update /etc/environment
+	if err := m.updateEtcEnvironment(remainingVars); err != nil {
+		m.logger.Errorf("Failed to update /etc/environment: %v", err)
+		return fmt.Errorf("failed to update /etc/environment: %w", err)
+	}
+
+	// Update /etc/profile.d/
+	if err := m.updateProfileD(remainingVars); err != nil {
+		m.logger.Errorf("Failed to update profile.d: %v", err)
+		return fmt.Errorf("failed to update profile.d: %w", err)
+	}
+
+	// Update systemd environment
+	if err := m.updateSystemdEnvironment(remainingVars); err != nil {
+		m.logger.Errorf("Failed to update systemd environment: %v", err)
+		// Don't return error as this is not critical
 	}
 
 	m.logger.Info("Successfully destroyed environment variables")
@@ -181,11 +193,6 @@ func (m *Manager) Update(variables map[string]string) error {
 
 // SyncSystemEnvironment synchronizes system-wide environment variables
 func (m *Manager) SyncSystemEnvironment(envVars map[string]string) (map[string]string, bool, error) {
-	if len(envVars) == 0 {
-		m.logger.Info("No environment variables to sync")
-		return envVars, false, nil
-	}
-
 	m.logger.Info("Synchronizing system-wide environment variables")
 
 	// Check if changes are needed by comparing with current state
@@ -195,11 +202,31 @@ func (m *Manager) SyncSystemEnvironment(envVars map[string]string) (map[string]s
 		// Continue with sync even if we can't get current state
 	}
 
+	// If desired state is empty but current state has variables, we need to remove them
+	if len(envVars) == 0 {
+		if len(currentEnv) > 0 {
+			m.logger.Info("Desired state is empty, removing all environment variables")
+			if err := m.RemoveSystemEnvironment(); err != nil {
+				m.logger.Errorf("Failed to remove environment variables: %v", err)
+				return envVars, true, err
+			}
+			m.logger.Info("All environment variables removed successfully")
+			return envVars, true, nil
+		}
+		m.logger.Info("No environment variables to sync - desired and current states are both empty")
+		return envVars, false, nil
+	}
+
 	changesMade := false
-	for key, desiredValue := range envVars {
-		if currentValue, exists := currentEnv[key]; !exists || currentValue != desiredValue {
-			changesMade = true
-			break
+	// Check if any values changed or if variables need to be added/removed
+	if len(currentEnv) != len(envVars) {
+		changesMade = true
+	} else {
+		for key, desiredValue := range envVars {
+			if currentValue, exists := currentEnv[key]; !exists || currentValue != desiredValue {
+				changesMade = true
+				break
+			}
 		}
 	}
 
@@ -337,24 +364,35 @@ func (m *Manager) RemoveSystemEnvironment() error {
 
 	// Remove profile.d script
 	profileFile := "/etc/profile.d/streamdeploy.sh"
-	if err := os.Remove(profileFile); err != nil && !os.IsNotExist(err) {
-		m.logger.Errorf("Failed to remove profile script: %v", err)
+	if err := os.Remove(profileFile); err != nil {
+		if !os.IsNotExist(err) {
+			m.logger.Errorf("Failed to remove profile script: %v", err)
+		}
 	} else {
 		m.logger.Infof("Removed profile script: %s", profileFile)
 	}
 
 	// Remove systemd environment file
 	systemdEnvFile := "/etc/systemd/system.conf.d/streamdeploy-env.conf"
-	if err := os.Remove(systemdEnvFile); err != nil && !os.IsNotExist(err) {
-		m.logger.Errorf("Failed to remove systemd environment file: %v", err)
+	systemdFileRemoved := false
+	if err := os.Remove(systemdEnvFile); err != nil {
+		if !os.IsNotExist(err) {
+			m.logger.Errorf("Failed to remove systemd environment file: %v", err)
+		}
 	} else {
 		m.logger.Infof("Removed systemd environment file: %s", systemdEnvFile)
+		systemdFileRemoved = true
+	}
 
-		// Reload systemd configuration
+	// Reload systemd configuration if we removed the systemd file
+	if systemdFileRemoved {
 		if cmd := exec.Command("systemctl", "daemon-reload"); cmd.Run() != nil {
 			m.logger.Error("Failed to reload systemd configuration after cleanup")
+		} else {
+			m.logger.Info("Systemd configuration reloaded successfully")
 		}
 	}
 
+	m.logger.Info("StreamDeploy environment variables removed from system")
 	return nil
 }
