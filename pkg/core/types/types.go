@@ -308,6 +308,5 @@ type SSHTunnelManager interface {
 	SendHeartbeat() error
 	Reconnect() error
 	ResumeSession(sessionID string, channels []string) error
-	HandleCustomCommand(command string) error
 	HandleSSHTunnelCommand(command string) error
 }

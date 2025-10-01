@@ -430,7 +430,11 @@ func (a *CoreAgent) executeCommand(cmd interface{}) error {
 
 	if strings.HasPrefix(command, "custom ") {
 		a.logger.Infof("Received custom command: %s", command)
-		return a.sshTunnelManager.HandleCustomCommand(command)
+		// Delegate to status update manager for custom command handling
+		if statusUpdateMgr, ok := a.statusUpdateManager.(interface{ HandleCustomCommand(string) error }); ok {
+			return statusUpdateMgr.HandleCustomCommand(command)
+		}
+		return fmt.Errorf("status update manager does not support custom commands")
 	}
 
 	a.logger.Infof("Executing regular command: %s", command)

@@ -582,24 +582,6 @@ func generateSessionID() string {
 	return fmt.Sprintf("%x", bytes)
 }
 
-// HandleCustomCommand handles custom commands (those starting with "custom ")
-func (stm *SSHTunnelManager) HandleCustomCommand(command string) error {
-	// Parse command: "custom ssh {user_id}"
-	parts := strings.Fields(command)
-
-	if len(parts) < 2 {
-		return fmt.Errorf("invalid custom command format: %s", command)
-	}
-
-	// Check for SSH tunnel command
-	if parts[1] == "ssh" {
-		return stm.HandleSSHTunnelCommand(command)
-	}
-
-	// Add other custom command types here in the future
-	return fmt.Errorf("unknown custom command type: %s", parts[1])
-}
-
 // HandleSSHTunnelCommand handles SSH tunnel commands
 func (stm *SSHTunnelManager) HandleSSHTunnelCommand(command string) error {
 	// Parse command: "custom ssh {user_id}"

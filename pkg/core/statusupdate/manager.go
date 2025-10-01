@@ -4,6 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"runtime"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/types"
@@ -187,19 +192,9 @@ func (m *Manager) performStatusUpdateCycle() error {
 		m.logger.Errorf("API call failed: %v", apiError)
 	}
 
-	// Step 4: Execute command if present
-	if hasCommand {
-		m.logger.Info("Executing command")
-		if err := m.agent.ExecuteCommand(command); err != nil {
-			m.logger.Errorf("Command execution failed: %v", err)
-		} else {
-			m.logger.Debug("Command executed successfully")
-		}
-	}
-
-	// Step 5: Update agent settings in memory (logging_level, mode, update_frequency, heartbeat_frequency)
+	// Step 4: Update agent settings in memory (logging_level, mode, update_frequency, heartbeat_frequency)
 	if hasNewState {
-		m.logger.Debug("Step 5: Updating agent settings in memory")
+		m.logger.Debug("Step 4: Updating agent settings in memory")
 		if err := m.updateAgentSettingsInMemory(); err != nil {
 			m.logger.Errorf("Failed to update agent settings in memory: %v", err)
 		} else {
@@ -211,8 +206,18 @@ func (m *Manager) performStatusUpdateCycle() error {
 	m.logger.Debug("Step 5: Performing state consolidation")
 	consolidationResult := m.performStateConsolidation()
 
-	// Step 6: Collect all errors and send feedback to backend
-	m.logger.Debug("Step 6: Collecting results and sending feedback")
+	// Step 6: Execute command if present (after state consolidation so env vars are set)
+	if hasCommand {
+		m.logger.Info("Executing command (after state consolidation)")
+		if err := m.agent.ExecuteCommand(command); err != nil {
+			m.logger.Errorf("Command execution failed: %v", err)
+		} else {
+			m.logger.Debug("Command executed successfully")
+		}
+	}
+
+	// Step 7: Collect all errors and send feedback to backend
+	m.logger.Debug("Step 7: Collecting results and sending feedback")
 	// Only send feedback if there are actual changes made or new state was received
 	if hasNewState || consolidationResult.OperationsPerformed {
 		// Determine if this was triggered by an API update (only if API succeeded and provided new state/command)
@@ -230,9 +235,9 @@ func (m *Manager) performStatusUpdateCycle() error {
 		m.logger.Info("No changes made and no new state received, skipping feedback")
 	}
 
-	// Step 7: Update state.json after all operations complete (only if there are changes and no errors)
+	// Step 8: Update state.json after all operations complete (only if there are changes and no errors)
 	if hasNewState && len(consolidationResult.Errors) == 0 {
-		m.logger.Debug("Step 7: Updating state.json")
+		m.logger.Debug("Step 8: Updating state.json")
 		desiredState := m.agent.GetDesiredState()
 		if desiredState != nil {
 			if err := m.configManager.UpdateStateConfig(desiredState); err != nil {
@@ -477,4 +482,164 @@ func (m *Manager) Stop() {
 		close(m.stopChan)
 		m.running = false
 	}
+}
+
+// HandleCustomCommand handles custom commands (those starting with "custom ")
+func (m *Manager) HandleCustomCommand(command string) error {
+	// Parse command: "custom ssh {user_id}" or "custom update"
+	parts := strings.Fields(command)
+
+	if len(parts) < 2 {
+		return fmt.Errorf("invalid custom command format: %s", command)
+	}
+
+	// Check for update command
+	if parts[1] == "update" {
+		return m.HandleUpdateCommand(command)
+	}
+
+	// Check for SSH tunnel command - delegate to SSH tunnel manager
+	if parts[1] == "ssh" {
+		// Get SSH tunnel manager from agent
+		if sshManager, ok := m.agent.(interface{ GetSSHTunnelManager() types.SSHTunnelManager }); ok {
+			tunnelMgr := sshManager.GetSSHTunnelManager()
+			if tunnelMgr != nil {
+				return tunnelMgr.HandleSSHTunnelCommand(command)
+			}
+			return fmt.Errorf("SSH tunnel manager not available")
+		}
+		return fmt.Errorf("SSH tunnel manager not available")
+	}
+
+	// Add other custom command types here in the future
+	return fmt.Errorf("unknown custom command type: %s", parts[1])
+}
+
+// HandleUpdateCommand handles agent update commands
+func (m *Manager) HandleUpdateCommand(command string) error {
+	// Parse command: "custom update"
+	parts := strings.Fields(command)
+
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid update command format: %s (expected 'custom update')", command)
+	}
+
+	if parts[0] != "custom" || parts[1] != "update" {
+		return fmt.Errorf("invalid update command format: %s (expected 'custom update')", command)
+	}
+
+	m.logger.Info("Starting agent update process...")
+
+	// Detect system architecture
+	arch := runtime.GOARCH
+	osName := runtime.GOOS
+
+	// Map Go architecture names to our naming convention
+	var archSuffix string
+	switch arch {
+	case "arm64":
+		archSuffix = "arm64"
+	case "amd64":
+		archSuffix = "amd64"
+	case "arm":
+		archSuffix = "armv7"
+	default:
+		return fmt.Errorf("unsupported architecture: %s", arch)
+	}
+
+	// Construct download URL
+	downloadURL := fmt.Sprintf("https://get.streamdeploy.com/streamdeploy-agent-%s-%s", osName, archSuffix)
+	m.logger.Infof("Download URL: %s", downloadURL)
+
+	// Create update script that will run independently
+	updateScript := fmt.Sprintf(`#!/bin/bash
+set -e
+
+# Log to file
+exec > /tmp/streamdeploy-update.log 2>&1
+
+echo "StreamDeploy Agent Update Started at $(date)"
+echo "Download URL: %s"
+
+# Create temporary file
+t=$(mktemp)
+echo "Temporary file: $t"
+
+# Download new agent
+echo "Downloading new agent..."
+if ! curl -fsSL "%s" > "$t"; then
+    echo "Failed to download agent"
+    rm -f "$t"
+    exit 1
+fi
+
+# Make executable
+chmod +x "$t"
+echo "Agent downloaded successfully"
+
+# Give the current process time to exit cleanly
+echo "Waiting 2 seconds for current agent to prepare for shutdown..."
+sleep 2
+
+# Run the installer (it will handle stopping the service, replacing binary, and restarting)
+echo "Running installer..."
+if ! sudo "$t"; then
+    echo "Installer failed"
+    rm -f "$t"
+    exit 1
+fi
+
+echo "Update completed successfully at $(date)"
+rm -f "$t"
+`, downloadURL, downloadURL)
+
+	// Write update script to temporary file
+	scriptFile, err := os.CreateTemp("", "streamdeploy-update-*.sh")
+	if err != nil {
+		return fmt.Errorf("failed to create update script: %w", err)
+	}
+	scriptPath := scriptFile.Name()
+
+	if _, err := scriptFile.WriteString(updateScript); err != nil {
+		scriptFile.Close()
+		os.Remove(scriptPath)
+		return fmt.Errorf("failed to write update script: %w", err)
+	}
+	scriptFile.Close()
+
+	// Make script executable
+	if err := os.Chmod(scriptPath, 0755); err != nil {
+		os.Remove(scriptPath)
+		return fmt.Errorf("failed to make update script executable: %w", err)
+	}
+
+	m.logger.Infof("Update script created: %s", scriptPath)
+
+	// Execute update script in background, detached from current process
+	// Use nohup and redirect output to ensure it continues after parent exits
+	cmd := exec.Command("nohup", "bash", scriptPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true, // Create new process group
+		Pgid:    0,
+	}
+
+	// Start the process without waiting for it
+	if err := cmd.Start(); err != nil {
+		os.Remove(scriptPath)
+		return fmt.Errorf("failed to start update process: %w", err)
+	}
+
+	m.logger.Infof("Update process started with PID: %d", cmd.Process.Pid)
+	m.logger.Info("Agent will be updated and restarted shortly...")
+
+	// Detach from the process - let it run independently
+	go func() {
+		// Wait for the process to finish (in background)
+		cmd.Wait()
+		// Clean up script file after some delay
+		time.Sleep(5 * time.Minute)
+		os.Remove(scriptPath)
+	}()
+
+	return nil
 }
