@@ -813,6 +813,27 @@ func ExtractDeviceIDFromJWT(token string) (string, error) {
 	return deviceID, nil
 }
 
+// ExtractDeviceIDFromCert extracts the device ID from a certificate's Common Name
+func ExtractDeviceIDFromCert(certData []byte) (string, error) {
+	block, _ := pem.Decode(certData)
+	if block == nil {
+		return "", fmt.Errorf("failed to decode PEM certificate")
+	}
+
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse certificate: %w", err)
+	}
+
+	// The device ID should be in the Common Name (CN) of the certificate subject
+	deviceID := cert.Subject.CommonName
+	if deviceID == "" {
+		return "", fmt.Errorf("device ID (CN) not found in certificate")
+	}
+
+	return deviceID, nil
+}
+
 // GetBootstrapToken gets bootstrap token from command line or environment (public version)
 func GetBootstrapToken() string {
 	// Check command line argument (skip first arg which is the binary name)
@@ -1381,16 +1402,52 @@ func EnsureAgentConfig(logger types.Logger, configPath string) error {
 
 	logger.Info("agent.json not found, creating default configuration...")
 
-	// Get bootstrap token for device ID extraction
-	bootstrapToken := GetBootstrapToken()
-	if bootstrapToken == "" {
-		return fmt.Errorf("bootstrap token is required to create agent.json. Usage: sudo ./streamdeploy-agent <token> or export SD_BOOTSTRAP_TOKEN=\"your-token\"")
+	// Check if certificates exist - if they do, we don't need bootstrap token
+	pkiDir := PKIDir
+	requiredCertFiles := []string{
+		filepath.Join(pkiDir, "ca.crt"),
+		filepath.Join(pkiDir, "device.crt"),
+		filepath.Join(pkiDir, "device.key"),
+		filepath.Join(pkiDir, "fullchain.crt"),
 	}
 
-	// Extract device ID from JWT
-	deviceID, err := ExtractDeviceIDFromJWT(bootstrapToken)
-	if err != nil {
-		return fmt.Errorf("failed to extract device_id from bootstrap token: %w", err)
+	certsExist := true
+	for _, file := range requiredCertFiles {
+		if _, err := os.Stat(file); os.IsNotExist(err) {
+			certsExist = false
+			break
+		}
+	}
+
+	var deviceID string
+	if certsExist {
+		// Certificates exist, we can extract device ID from the certificate
+		logger.Info("Certificates found, extracting device ID from certificate...")
+		certData, err := os.ReadFile(filepath.Join(pkiDir, "device.crt"))
+		if err != nil {
+			return fmt.Errorf("failed to read device certificate: %w", err)
+		}
+
+		// Extract device ID from cert CN (Common Name)
+		deviceID, err = ExtractDeviceIDFromCert(certData)
+		if err != nil {
+			return fmt.Errorf("failed to extract device_id from certificate: %w", err)
+		}
+		logger.Infof("Extracted device ID from certificate: %s", deviceID)
+	} else {
+		// No certificates, bootstrap token is required
+		bootstrapToken := GetBootstrapToken()
+		if bootstrapToken == "" {
+			return fmt.Errorf("bootstrap token is required to create agent.json. Usage: sudo ./streamdeploy-agent <token> or export SD_BOOTSTRAP_TOKEN=\"your-token\"")
+		}
+
+		// Extract device ID from JWT
+		var err error
+		deviceID, err = ExtractDeviceIDFromJWT(bootstrapToken)
+		if err != nil {
+			return fmt.Errorf("failed to extract device_id from bootstrap token: %w", err)
+		}
+		logger.Infof("Extracted device ID from bootstrap token: %s", deviceID)
 	}
 
 	// Detect system information
