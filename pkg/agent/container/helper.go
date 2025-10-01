@@ -10,6 +10,11 @@ import (
 	"github.com/StreamDeploy/streamdeploy-agent/pkg/core/types"
 )
 
+// normalizeImageName converts image name to lowercase for Docker compatibility
+func (m *Manager) normalizeImageName(image string) string {
+	return strings.ToLower(image)
+}
+
 // containerExists checks if a container exists (running or stopped)
 func (m *Manager) containerExists(name string) bool {
 	cmd := exec.Command("docker", "ps", "-a", "--filter", fmt.Sprintf("name=%s", name), "--format", "{{.Names}}")
@@ -350,8 +355,12 @@ func (m *Manager) StartContainer(config *types.ContainerConfig) error {
 		args = append(args, config.Entrypoint...)
 	}
 
-	// Add image
-	args = append(args, config.Image)
+	// Add image (convert to lowercase for Docker compatibility)
+	normalizedImage := m.normalizeImageName(config.Image)
+	if normalizedImage != config.Image {
+		m.logger.Infof("Normalizing Docker image name: '%s' -> '%s' (Docker requires lowercase repository names)", config.Image, normalizedImage)
+	}
+	args = append(args, normalizedImage)
 
 	// Execute docker run command
 	cmd := exec.Command("docker", args...)
