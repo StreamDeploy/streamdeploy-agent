@@ -142,26 +142,30 @@ func (m *Manager) removeFromEtcEnvironment() error {
 	inStreamDeploySection := false
 
 	for _, line := range lines {
-		if strings.TrimSpace(line) == "# StreamDeploy Agent Environment Variables" {
+		trimmedLine := strings.TrimSpace(line)
+
+		// Check if this is the StreamDeploy section header
+		if trimmedLine == "# StreamDeploy Agent Environment Variables" {
 			inStreamDeploySection = true
-			continue
+			continue // Skip the header line
 		}
 
-		// Skip StreamDeploy variables
-		if inStreamDeploySection && strings.Contains(line, "=") && !strings.HasPrefix(strings.TrimSpace(line), "#") {
-			continue
-		}
+		// If we're in the StreamDeploy section
+		if inStreamDeploySection {
+			// Check if this is a variable line (contains = and is not a comment)
+			if strings.Contains(line, "=") && !strings.HasPrefix(trimmedLine, "#") {
+				continue // Skip StreamDeploy variable lines
+			}
 
-		// Reset section flag if we hit another comment or empty line after StreamDeploy section
-		if inStreamDeploySection && (strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#")) {
-			if strings.TrimSpace(line) != "" {
+			// Empty line or another comment means end of StreamDeploy section
+			if trimmedLine == "" || strings.HasPrefix(trimmedLine, "#") {
 				inStreamDeploySection = false
+				// Fall through to add this line to filteredLines
 			}
 		}
 
-		if !inStreamDeploySection {
-			filteredLines = append(filteredLines, line)
-		}
+		// Add line to filtered output (we're not in StreamDeploy section or it's the end marker)
+		filteredLines = append(filteredLines, line)
 	}
 
 	// Write back to file
@@ -170,5 +174,6 @@ func (m *Manager) removeFromEtcEnvironment() error {
 		return fmt.Errorf("failed to write %s: %w", envFile, err)
 	}
 
+	m.logger.Infof("Removed StreamDeploy variables from %s", envFile)
 	return nil
 }
