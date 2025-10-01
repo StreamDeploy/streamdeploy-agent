@@ -882,7 +882,7 @@ func ParseOSRelease() (map[string]string, error) {
 		if strings.Contains(line, "=") {
 			parts := strings.SplitN(line, "=", 2)
 			key := parts[0]
-			value := strings.Trim(parts[1], "\"")
+			value := sanitizeString(strings.Trim(parts[1], "\""))
 			osInfo[key] = value
 		}
 	}
@@ -933,6 +933,18 @@ func DetectARMVariant() string {
 	return "armv7"
 }
 
+// sanitizeString removes null bytes and other problematic characters from strings
+// This is critical for preventing PostgreSQL errors when storing system information
+func sanitizeString(s string) string {
+	// Remove null bytes and other control characters except tab, newline, and carriage return
+	return strings.Map(func(r rune) rune {
+		if r == 0 || (r < 32 && r != '\t' && r != '\n' && r != '\r') {
+			return -1 // Remove the character
+		}
+		return r
+	}, s)
+}
+
 // DetectMachineType detects machine type (public version)
 func DetectMachineType() string {
 	// Detect architecture first
@@ -940,7 +952,7 @@ func DetectMachineType() string {
 
 	// Try to detect from device tree first (NVIDIA Jetson devices)
 	if model, err := os.ReadFile("/sys/firmware/devicetree/base/model"); err == nil {
-		modelStr := strings.TrimSpace(string(model))
+		modelStr := sanitizeString(strings.TrimSpace(string(model)))
 		if strings.Contains(modelStr, "Jetson") {
 			return modelStr
 		}
