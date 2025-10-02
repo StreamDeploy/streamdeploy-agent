@@ -31,9 +31,9 @@ func (m *Manager) executeCommand(command, operation string) error {
 		}
 		m.logger.Infof("Command executed successfully")
 		return nil
-	case <-time.After(5 * time.Minute): // 5 minute timeout
+	case <-time.After(2 * time.Minute): // 2 minute timeout
 		cmd.Process.Kill()
-		return fmt.Errorf("command timed out after 5 minutes")
+		return fmt.Errorf("command timed out after 2 minutes")
 	}
 }
 
@@ -52,9 +52,23 @@ func (m *Manager) isCustomPackageInstalled(packages map[string]types.CustomPacka
 		m.logger.Infof("Checking if custom package '%s' is installed using command: %s", name, pkg.Check)
 
 		cmd := exec.Command("sh", "-c", pkg.Check)
-		err := cmd.Run()
-		installed := err == nil
 
+		// Set a timeout for check command execution
+		done := make(chan error, 1)
+		go func() {
+			done <- cmd.Run()
+		}()
+
+		var err error
+		select {
+		case err = <-done:
+			// Command completed
+		case <-time.After(2 * time.Minute): // 2 minute timeout
+			cmd.Process.Kill()
+			err = fmt.Errorf("check command timed out after 2 minutes")
+		}
+
+		installed := err == nil
 		results = append(results, installed)
 		m.logger.Infof("Custom package '%s' installed status: %t", name, installed)
 	}

@@ -228,9 +228,9 @@
     },
     "custom_packages": {
         "whatever-v1.2": {
-            "install": "curl -fsSL https://whatever.com/install.sh | sudo sh",
-            "check": "whatever --version",
-            "uninstall": "sudo whatever --uninstall"
+            "install": "touch /home/sd/testing",
+            "check": "cat /home/sd/testing",
+            "uninstall": "rm -rf /home/sd/testing"
         }
     }
 }
