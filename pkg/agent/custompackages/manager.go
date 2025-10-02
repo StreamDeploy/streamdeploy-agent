@@ -134,6 +134,7 @@ func (m *Manager) Create(packages map[string]types.CustomPackage) ([]string, err
 			continue
 		}
 
+		m.logger.Infof("Starting installation of package %s", name)
 		if err := m.executeCommand(pkg.Install, "install"); err != nil {
 			errorMsg := fmt.Sprintf("failed to create package %s: %v", name, err)
 			m.logger.Errorf(errorMsg)

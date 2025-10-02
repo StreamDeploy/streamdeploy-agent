@@ -32,7 +32,9 @@ func (m *Manager) executeCommand(command, operation string) error {
 		m.logger.Infof("Command executed successfully")
 		return nil
 	case <-time.After(2 * time.Minute): // 2 minute timeout
-		cmd.Process.Kill()
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
 		return fmt.Errorf("command timed out after 2 minutes")
 	}
 }
@@ -64,7 +66,9 @@ func (m *Manager) isCustomPackageInstalled(packages map[string]types.CustomPacka
 		case err = <-done:
 			// Command completed
 		case <-time.After(2 * time.Minute): // 2 minute timeout
-			cmd.Process.Kill()
+			if cmd.Process != nil {
+				cmd.Process.Kill()
+			}
 			err = fmt.Errorf("check command timed out after 2 minutes")
 		}
 
