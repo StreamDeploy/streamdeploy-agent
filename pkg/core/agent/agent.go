@@ -312,6 +312,10 @@ func (a *CoreAgent) GetDesiredState() *types.StateConfig {
 // SetDesiredState sets the agent's desired state (called by statusupdate manager)
 func (a *CoreAgent) SetDesiredState(state *types.StateConfig) {
 	a.desiredState = state
+	// Update the heartbeat manager with the new desired state so it can collect updated custom metrics
+	if a.heartbeatManager != nil {
+		a.heartbeatManager.SetDesiredState(state)
+	}
 }
 
 // GetContainerManager returns the container manager
