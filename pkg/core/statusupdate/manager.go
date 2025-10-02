@@ -584,9 +584,37 @@ sleep 2
 # Run the installer (it will handle stopping the service, replacing binary, and restarting)
 echo "Running installer..."
 if ! sudo "$t"; then
-    echo "Installer failed"
-    rm -f "$t"
-    exit 1
+    echo "Installer failed - attempting to restart service manually"
+    # If installer fails, try to restart the service manually
+    if systemctl is-enabled streamdeploy-agent >/dev/null 2>&1; then
+        echo "Attempting to restart service manually..."
+        if systemctl start streamdeploy-agent; then
+            echo "Service restarted successfully"
+        else
+            echo "Failed to restart service manually"
+            exit 1
+        fi
+    else
+        echo "Service not enabled, cannot restart manually"
+        exit 1
+    fi
+else
+    echo "Installer completed successfully"
+fi
+
+# Verify service is running after update
+echo "Verifying service is running..."
+sleep 3  # Give service time to start
+if systemctl is-active streamdeploy-agent >/dev/null 2>&1; then
+    echo "Service is running successfully"
+else
+    echo "Service is not running - attempting to start it"
+    if systemctl start streamdeploy-agent; then
+        echo "Service started successfully"
+    else
+        echo "Failed to start service after update"
+        exit 1
+    fi
 fi
 
 echo "Update completed successfully at $(date)"
@@ -615,12 +643,20 @@ rm -f "$t"
 
 	m.logger.Infof("Update script created: %s", scriptPath)
 
-	// Execute update script in background, detached from current process
-	// Use nohup and redirect output to ensure it continues after parent exits
+	// Execute update script in background, completely detached from current process
+	// Use nohup with proper output redirection to ensure it continues after parent exits
 	cmd := exec.Command("nohup", "bash", scriptPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true, // Create new process group
 		Pgid:    0,
+		Setsid:  true, // Create new session to completely detach from parent
+	}
+
+	// Redirect output to log file to ensure we can debug any issues
+	logFile, err := os.OpenFile("/tmp/streamdeploy-update-execution.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err == nil {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
 	}
 
 	// Start the process without waiting for it
@@ -635,7 +671,17 @@ rm -f "$t"
 	// Detach from the process - let it run independently
 	go func() {
 		// Wait for the process to finish (in background)
-		cmd.Wait()
+		if err := cmd.Wait(); err != nil {
+			m.logger.Errorf("Update process failed: %v", err)
+		} else {
+			m.logger.Info("Update process completed successfully")
+		}
+
+		// Close log file if it was opened
+		if logFile != nil {
+			logFile.Close()
+		}
+
 		// Clean up script file after some delay
 		time.Sleep(5 * time.Minute)
 		os.Remove(scriptPath)
