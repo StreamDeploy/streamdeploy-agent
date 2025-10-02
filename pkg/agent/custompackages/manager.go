@@ -75,9 +75,6 @@ func (m *Manager) Destroy(packages map[string]types.CustomPackage) ([]string, er
 		return []string{}, nil
 	}
 
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
 	m.logger.Info("Destroying custom packages")
 
 	var destroyedPackages []string
@@ -116,9 +113,6 @@ func (m *Manager) Create(packages map[string]types.CustomPackage) ([]string, err
 	if len(packages) == 0 {
 		return []string{}, nil
 	}
-
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
 
 	m.logger.Info("Creating custom packages")
 
