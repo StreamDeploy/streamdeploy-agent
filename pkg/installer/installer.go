@@ -3,8 +3,9 @@ package installer
 import (
 	"bufio"
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
@@ -489,10 +490,10 @@ func (i *Installer) enrollStart() (string, string, error) {
 }
 
 func (i *Installer) generateKeyAndCSR() (string, string, error) {
-	i.logger.Info("Generating RSA key and CSR...")
+	i.logger.Info("Generating ECDSA P-256 key and CSR...")
 
-	// Generate RSA private key
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	// Generate ECDSA P-256 private key
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to generate private key: %w", err)
 	}
@@ -510,7 +511,7 @@ func (i *Installer) generateKeyAndCSR() (string, string, error) {
 				Path:   "/device/" + i.deviceID,
 			},
 		},
-		SignatureAlgorithm: x509.SHA256WithRSA,
+		SignatureAlgorithm: x509.ECDSAWithSHA256,
 	}
 
 	// Create CSR
@@ -520,9 +521,13 @@ func (i *Installer) generateKeyAndCSR() (string, string, error) {
 	}
 
 	// Encode private key to PEM
+	privateKeyDER, err := x509.MarshalECPrivateKey(privateKey)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to marshal private key: %w", err)
+	}
 	privateKeyPEM := &pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
+		Type:  "EC PRIVATE KEY",
+		Bytes: privateKeyDER,
 	}
 	privateKeyStr := string(pem.EncodeToMemory(privateKeyPEM))
 
